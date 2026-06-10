@@ -1,0 +1,3466 @@
+"""
+Dungeons & Food — Side-Scroller (Smooth Camera + Improved Knight Model + Non-Repeating Cards + Boss Bars + Dragon Final @15)
+Auto-installs pygame if missing.
+
+Controls:
+- Move: A/D or ←/→
+- Jump: W (double jump)
+- Attack / Use door: E
+- Dash (if unlocked): Left Shift
+- Block (if unlocked): F
+- Deflect (if unlocked): Block (F) reflects projectiles back
+- Ability cards: 1/2/3 or click
+- Menu: Esc
+
+If an exception occurs, the game pauses on an ERROR screen showing the traceback (scroll with Up/Down).
+"""
+
+from __future__ import annotations
+
+import math
+import random
+import subprocess
+import sys
+import traceback
+from dataclasses import dataclass
+from typing import Callable, List, Optional, Tuple
+
+# ----------------------------
+# Auto-install pygame (best-effort)
+# ----------------------------
+try:
+    import pygame  # type: ignore
+except ImportError:
+    print("[Bootstrap] pygame not found. Attempting to install pygame via pip...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pygame"])
+        import pygame  # type: ignore
+        print("[Bootstrap] pygame installed successfully.")
+    except Exception as e:
+        print("[Bootstrap] Failed to install pygame automatically.")
+        print("Please install manually: pip install pygame")
+        raise SystemExit(1) from e
+
+
+# ----------------------------
+# Config
+# ----------------------------
+WIDTH, HEIGHT = 960, 540
+FPS = 60
+
+GROUND_Y = 470
+GRAVITY = 2400.0
+
+# --- Side-scrolling camera (smooth follow) ---
+CAMERA_SMOOTH = 0.14
+CAMERA_CENTER_X = WIDTH * 0.45
+
+MILESTONE_EVERY = 5
+FINAL_LEVEL = 15  # Dragon final
+
+DOOR_THRESHOLD = 55.0
+HUNGER_MAX = 100.0
+START_HUNGER = 50.0
+
+BASE_DRAIN = 2.2
+DRAIN_PER_LEVEL = 0.16
+
+PLAYER_W, PLAYER_H = 36, 58
+BASE_RUN_SPEED = 330.0
+BASE_JUMP = 740.0
+BASE_MAX_JUMPS = 2
+
+ATTACK_DURATION = 0.14
+ATTACK_COOLDOWN = 0.26
+ATTACK_RANGE_W = 70
+ATTACK_RANGE_H = 48
+BASE_ATTACK_DAMAGE = 1
+
+DASH_SPEED = 820.0
+DASH_TIME = 0.14
+DASH_COOLDOWN = 0.65
+
+BLOCK_TIME = 0.55
+BLOCK_COOLDOWN = 1.20
+
+TOUCH_PENALTY = 16.0
+ARROW_PENALTY = 12.0
+SLIME_PENALTY = 10.0
+PILLAR_PENALTY = 14.0
+BOSS_TOUCH_PENALTY = 22.0
+INVULN_TIME = 0.85
+
+LEVEL_BASE_WIDTH = 2400
+LEVEL_WIDTH_STEP = 140
+BOSS_ARENA_WIDTH = 1700
+
+# enemies sizes
+GOBLIN_W, GOBLIN_H = 46, 38
+SKELE_W, SKELE_H = 42, 48
+CASTER_W, CASTER_H = 48, 52
+SLIME_W, SLIME_H = 34, 24
+
+SLIME_BOSS_W, SLIME_BOSS_H = 140, 112
+GOLEM_BOSS_W, GOLEM_BOSS_H = 170, 160
+DRAGON_W, DRAGON_H = 240, 150
+
+# speeds / attacks
+GOBLIN_SPEED = 120.0
+SKELE_SPEED = 75.0
+CASTER_SPEED = 48.0
+SLIME_SPEED = 145.0
+
+ARROW_SPEED_BASE = 280.0
+ARROW_SPEED_PER_LEVEL = 30.0
+ARROW_SPEED_CAP = 980.0
+
+SLIME_BLOB_SPEED = 360.0
+
+SLOW_MULT = 0.55
+SLOW_TIME = 1.9
+
+# slime boss
+SLIME_SPAWN_CD = 2.6
+SLIME_SHOOT_CD = 1.35
+SLIME_SLAM_CD = 4.2
+SLIME_RED_RATIO = 0.50
+SLIME_SWARM_RATIO = 0.30
+SLIME_NORMAL_CAP = 5
+SLIME_LOWHP_CAP = 999
+
+# golem boss
+GOLEM_WALK_SPEED = 58.0
+GOLEM_SLAM_CD = 2.9
+GOLEM_TELEGRAPH_TIME = 0.65
+GOLEM_PILLAR_LEAD_TIME = 0.28
+
+# caster golem
+CASTER_PILLAR_CD = 2.1
+CASTER_LOWHP_CD = 1.45
+
+# dragon boss
+DRAGON_HP_BASE = 150
+DRAGON_FIREBALL_CD = 1.35
+DRAGON_BREATH_CD = 4.0
+DRAGON_SWOOP_CD = 5.1
+DRAGON_MELEE_CD = 1.8
+DRAGON_FIREBALL_SPEED = 320.0
+DRAGON_BREATH_DURATION = 1.65
+DRAGON_BURN_TICKS_INTERVAL = 0.35
+DRAGON_BURN_TICKS_AMOUNT = 1.0
+DRAGON_BURN_DURATION = 3.0
+DRAGON_BURN_SLOW_MULT = 0.78
+DRAGON_PHASE2_RATIO = 0.40
+
+# food
+FOOD_TTL = 8.0
+FOOD_BASE = 26.0
+
+# ----------------------------
+# Palette
+# ----------------------------
+COL_BG = (12, 12, 16)
+COL_BRICK = (18, 18, 24)
+COL_MORTAR = (30, 30, 40)
+
+COL_PLATFORM = (70, 70, 88)
+COL_PLATFORM_EDGE = (110, 110, 130)
+
+COL_OUTLINE = (5, 5, 7)
+COL_TEXT = (245, 245, 255)
+COL_TEXT_DIM = (185, 185, 205)
+
+# meadow/menu
+COL_SKY_TOP = (120, 200, 255)
+COL_SKY_BOTTOM = (165, 235, 255)
+COL_GRASS_1 = (52, 165, 72)
+COL_GRASS_2 = (35, 140, 58)
+
+# knight
+COL_ARMOR = (205, 210, 224)
+COL_ARMOR_DARK = (130, 135, 150)
+COL_ARMOR_SHINE = (235, 238, 248)
+COL_LEATHER = (88, 70, 52)
+COL_CLOTH = (45, 45, 62)
+COL_CLOTH2 = (70, 70, 95)
+COL_ACCENT = (220, 220, 240)
+COL_SHIELD = (190, 210, 235)
+
+# enemies
+COL_GOBLIN = (62, 90, 80)
+COL_GOBLIN_DARK = (36, 55, 50)
+COL_GOBLIN_ARMOR = (78, 78, 96)
+COL_GOBLIN_ACCENT = (110, 165, 145)
+
+COL_SKELE = (188, 188, 198)
+COL_SKELE_ACCENT = (125, 125, 145)
+
+COL_CASTER = (95, 95, 115)
+COL_CASTER_ACCENT = (150, 150, 175)
+
+COL_SLIME = (70, 160, 120)
+COL_SLIME_RED = (185, 75, 75)
+COL_SLIME_ACCENT = (110, 210, 165)
+COL_CROWN = (255, 210, 80)
+
+COL_GOLEM = (105, 105, 120)
+COL_GOLEM_ACCENT = (165, 185, 255)
+
+COL_DRAGON = (110, 70, 55)
+COL_DRAGON_ACCENT = (180, 130, 105)
+COL_FIRE = (255, 120, 50)
+COL_FIRE2 = (255, 200, 90)
+
+COL_ARROW = (225, 225, 240)
+COL_PILLAR = (95, 95, 115)
+
+COL_SWORD_NORMAL = (235, 235, 245)
+COL_SWORD_BLUE = (105, 195, 255)
+COL_SWORD_RED = (255, 85, 85)
+
+COL_HIT_SPARK = (240, 240, 255)
+COL_HP_BG = (20, 20, 28)
+COL_HP_FILL = (235, 235, 245)
+COL_HP_WARN = (255, 165, 90)
+
+# ----------------------------
+# Helpers
+# ----------------------------
+def clamp(v, lo, hi):
+    return lo if v < lo else hi if v > hi else v
+
+
+def lerp(a, b, t):
+    return a + (b - a) * t
+
+
+def draw_text(surface, font, text, x, y, color=COL_TEXT, center=False):
+    img = font.render(text, True, color)
+    rect = img.get_rect()
+    if center:
+        rect.center = (x, y)
+        surface.blit(img, rect)
+    else:
+        rect.topleft = (x, y)
+        surface.blit(img, rect)
+    return rect
+
+
+def make_vignette(size):
+    w, h = size
+    surf = pygame.Surface((w, h), pygame.SRCALPHA)
+    for i in range(10):
+        alpha = int(18 + i * 10)
+        pad = i * 14
+        pygame.draw.rect(
+            surf,
+            (0, 0, 0, alpha),
+            pygame.Rect(pad, pad, w - pad * 2, h - pad * 2),
+            width=14,
+            border_radius=30,
+        )
+    return surf
+
+
+def draw_hp_bar(screen, x, y, w, h, hp, max_hp):
+    if max_hp <= 0:
+        return
+    pct = clamp(hp / max_hp, 0.0, 1.0)
+    bg = pygame.Rect(x, y, w, h)
+    pygame.draw.rect(screen, COL_HP_BG, bg, border_radius=6)
+    pygame.draw.rect(screen, COL_OUTLINE, bg, 2, border_radius=6)
+    fill_w = int((w - 4) * pct)
+    fill = pygame.Rect(x + 2, y + 2, fill_w, h - 4)
+    col = COL_HP_FILL if pct > 0.35 else COL_HP_WARN
+    pygame.draw.rect(screen, col, fill, border_radius=6)
+
+
+def angle_of(vx, vy):
+    return math.atan2(vy, vx)
+
+
+def draw_rotated_arrow(screen, cx, cy, vx, vy, owner_player=False):
+    ang = angle_of(vx, vy)
+    length = 22
+    shaft = 14
+    tip = 6
+    fx, fy = math.cos(ang), math.sin(ang)
+    px, py = -fy, fx
+
+    p_tip = (cx + fx * length, cy + fy * length)
+    p_base = (cx - fx * shaft, cy - fy * shaft)
+    p_left = (cx - fx * 2 + px * 3, cy - fy * 2 + py * 3)
+    p_right = (cx - fx * 2 - px * 3, cy - fy * 2 - py * 3)
+
+    f1 = (p_base[0] + px * 5, p_base[1] + py * 5)
+    f2 = (p_base[0] - px * 5, p_base[1] - py * 5)
+    f3 = (p_base[0] - fx * 4, p_base[1] - fy * 4)
+
+    col = COL_ARROW if not owner_player else (200, 235, 255)
+    pygame.draw.line(screen, col, p_base, (cx + fx * (length - tip), cy + fy * (length - tip)), 3)
+    pygame.draw.line(screen, COL_OUTLINE, p_base, (cx + fx * (length - tip), cy + fy * (length - tip)), 1)
+    pygame.draw.polygon(screen, col, [p_tip, p_left, p_right])
+    pygame.draw.polygon(screen, COL_OUTLINE, [p_tip, p_left, p_right], 2)
+    pygame.draw.polygon(screen, col, [f1, f2, f3])
+    pygame.draw.polygon(screen, COL_OUTLINE, [f1, f2, f3], 1)
+
+
+# ----------------------------
+# UI
+# ----------------------------
+def draw_panel(surface, rect, fill=(26, 30, 42), border=(120, 145, 195), radius=22,
+               shadow=True, gloss=True, shadow_alpha=80):
+    rect = pygame.Rect(rect)
+    if shadow:
+        shadow_surf = pygame.Surface((rect.w + 24, rect.h + 24), pygame.SRCALPHA)
+        pygame.draw.rect(
+            shadow_surf,
+            (0, 0, 0, shadow_alpha),
+            pygame.Rect(12, 12, rect.w, rect.h),
+            border_radius=radius + 4,
+        )
+        surface.blit(shadow_surf, (rect.x - 12, rect.y - 2))
+
+    panel = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+    if len(fill) == 3:
+        base_fill = (*fill, 235)
+    else:
+        base_fill = fill
+    pygame.draw.rect(panel, base_fill, panel.get_rect(), border_radius=radius)
+
+    if gloss:
+        gloss_rect = pygame.Rect(10, 8, rect.w - 20, max(20, rect.h // 2 - 2))
+        pygame.draw.rect(panel, (255, 255, 255, 28), gloss_rect, border_radius=max(12, radius - 6))
+        inner_gloss = gloss_rect.inflate(-20, -12)
+        if inner_gloss.w > 0 and inner_gloss.h > 0:
+            pygame.draw.rect(panel, (255, 255, 255, 12), inner_gloss, border_radius=max(10, radius - 10))
+
+    shade_rect = pygame.Rect(10, rect.h // 2, rect.w - 20, rect.h // 2 - 8)
+    if shade_rect.w > 0 and shade_rect.h > 0:
+        pygame.draw.rect(panel, (0, 0, 0, 25), shade_rect, border_radius=max(10, radius - 8))
+
+    pygame.draw.rect(panel, border, panel.get_rect(), 2, border_radius=radius)
+    inner = panel.get_rect().inflate(-8, -8)
+    pygame.draw.rect(panel, (255, 255, 255, 20), inner, 1, border_radius=max(10, radius - 6))
+    surface.blit(panel, rect.topleft)
+
+
+def draw_cloud(surface, x: float, y: float, scale: float = 1.0, alpha: int = 210):
+    w = int(120 * scale)
+    h = int(58 * scale)
+    surf = pygame.Surface((w, h), pygame.SRCALPHA)
+    puff_col = (255, 255, 255, alpha)
+    shadow_col = (185, 210, 225, min(255, alpha // 2 + 20))
+    pygame.draw.ellipse(surf, shadow_col, pygame.Rect(int(10 * scale), int(24 * scale), int(96 * scale), int(24 * scale)))
+    for cx, cy, r in (
+        (int(28 * scale), int(30 * scale), int(18 * scale)),
+        (int(54 * scale), int(20 * scale), int(22 * scale)),
+        (int(80 * scale), int(26 * scale), int(18 * scale)),
+    ):
+        pygame.draw.circle(surf, puff_col, (cx, cy), r)
+    surface.blit(surf, (int(x), int(y)))
+
+
+
+def draw_torch(surface, x: int, y: int, t: float):
+    pulse = 0.5 + 0.5 * math.sin(t * 8.0 + x * 0.03)
+    glow_r = int(26 + 8 * pulse)
+    glow = pygame.Surface((glow_r * 2 + 20, glow_r * 2 + 20), pygame.SRCALPHA)
+    pygame.draw.circle(glow, (255, 180, 95, int(45 + 40 * pulse)), (glow.get_width() // 2, glow.get_height() // 2), glow_r)
+    surface.blit(glow, (x - glow.get_width() // 2, y - glow.get_height() // 2 - 2))
+    pygame.draw.rect(surface, (70, 46, 28), pygame.Rect(x - 3, y + 6, 6, 26), border_radius=3)
+    pygame.draw.rect(surface, COL_OUTLINE, pygame.Rect(x - 3, y + 6, 6, 26), 1, border_radius=3)
+    flame1 = [(x, y - 14), (x - 7, y + 5), (x, y + 1), (x + 7, y + 5)]
+    flame2 = [(x, y - 8), (x - 4, y + 4), (x, y), (x + 4, y + 4)]
+    pygame.draw.polygon(surface, (255, 132, 64), flame1)
+    pygame.draw.polygon(surface, (255, 220, 120), flame2)
+    pygame.draw.polygon(surface, COL_OUTLINE, flame1, 1)
+
+
+
+def draw_banner_flag(surface, x: int, y: int, color, t: float, flip: int = 1):
+    wave = math.sin(t * 3.6 + x * 0.04) * 5
+    pole = pygame.Rect(x - 2, y - 18, 4, 40)
+    pygame.draw.rect(surface, (90, 70, 48), pole, border_radius=2)
+    pygame.draw.rect(surface, COL_OUTLINE, pole, 1, border_radius=2)
+    pts = [
+        (x, y - 14),
+        (x + 30 * flip, y - 10 + wave),
+        (x + 20 * flip, y + 6 + wave * 0.6),
+        (x + 30 * flip, y + 20 + wave),
+        (x, y + 18),
+    ]
+    pygame.draw.polygon(surface, color, pts)
+    pygame.draw.polygon(surface, COL_OUTLINE, pts, 2)
+    pygame.draw.line(surface, (245, 225, 170), (x + 10 * flip, y - 2), (x + 19 * flip, y + 7), 2)
+
+
+
+def draw_sparkle(surface, x: int, y: int, size: int, color):
+    pygame.draw.line(surface, color, (x - size, y), (x + size, y), 1)
+    pygame.draw.line(surface, color, (x, y - size), (x, y + size), 1)
+
+
+@dataclass
+class Button:
+    rect: pygame.Rect
+    label: str
+    accent: Tuple[int, int, int] = (132, 175, 255)
+
+    def draw(self, screen, font, mouse_pos):
+        hover = self.rect.collidepoint(mouse_pos)
+        t = pygame.time.get_ticks() * 0.001
+        pulse = 0.5 + 0.5 * math.sin(t * 6.0 + self.rect.x * 0.01)
+        lift = -4 if hover else 0
+        rr = self.rect.move(0, lift)
+
+        shadow = pygame.Surface((rr.w + 24, rr.h + 24), pygame.SRCALPHA)
+        pygame.draw.rect(shadow, (0, 0, 0, 95 if hover else 70), pygame.Rect(12, 12, rr.w, rr.h), border_radius=20)
+        screen.blit(shadow, (rr.x - 12, rr.y - 4))
+
+        panel = pygame.Surface((rr.w, rr.h), pygame.SRCALPHA)
+        top = (72, 88, 126) if hover else (50, 60, 92)
+        bottom = (26, 30, 44) if hover else (22, 24, 36)
+        for yy in range(rr.h):
+            mix = yy / max(1, rr.h - 1)
+            col = (
+                int(lerp(top[0], bottom[0], mix)),
+                int(lerp(top[1], bottom[1], mix)),
+                int(lerp(top[2], bottom[2], mix)),
+                240,
+            )
+            pygame.draw.line(panel, col, (0, yy), (rr.w, yy))
+
+        pygame.draw.rect(panel, (255, 255, 255, 34 if hover else 24), pygame.Rect(8, 7, rr.w - 16, rr.h // 2 - 2), border_radius=16)
+        pygame.draw.rect(panel, (*self.accent, 70 if hover else 42), pygame.Rect(8, rr.h - 13, rr.w - 16, 6), border_radius=4)
+        pygame.draw.rect(panel, (*self.accent, 120 if hover else 95), panel.get_rect(), 2, border_radius=18)
+        pygame.draw.rect(panel, (255, 255, 255, 16), panel.get_rect().inflate(-8, -8), 1, border_radius=14)
+
+        orb_x = 28
+        orb_y = rr.h // 2
+        orb_r = 9 if hover else 8
+        pygame.draw.circle(panel, (*self.accent, 155), (orb_x, orb_y), orb_r + 5)
+        pygame.draw.circle(panel, self.accent, (orb_x, orb_y), orb_r)
+        pygame.draw.circle(panel, (255, 255, 255), (orb_x - 2, orb_y - 2), 3)
+
+        arrow_x = rr.w - 26
+        arrow = [(arrow_x - 6, orb_y - 7), (arrow_x + 5, orb_y), (arrow_x - 6, orb_y + 7)]
+        pygame.draw.polygon(panel, (220, 232, 255), arrow)
+        pygame.draw.polygon(panel, COL_OUTLINE, arrow, 1)
+
+        if hover:
+            glow = pygame.Surface((rr.w + 18, rr.h + 18), pygame.SRCALPHA)
+            pygame.draw.rect(glow, (*self.accent, int(30 + 35 * pulse)), pygame.Rect(9, 9, rr.w, rr.h), 3, border_radius=20)
+            screen.blit(glow, (rr.x - 9, rr.y - 9))
+
+        screen.blit(panel, rr.topleft)
+
+        img_shadow = font.render(self.label, True, (20, 24, 34))
+        img = font.render(self.label, True, (244, 248, 255))
+        text_rect = img.get_rect(center=(rr.centerx + 4, rr.centery + 1))
+        screen.blit(img_shadow, img_shadow.get_rect(center=(text_rect.centerx + 1, text_rect.centery + 2)))
+        screen.blit(img, text_rect)
+
+    def clicked(self, event) -> bool:
+        return event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.rect.collidepoint(event.pos)
+
+
+# ----------------------------
+# Ability Cards
+# ----------------------------
+@dataclass(frozen=True)
+class Card:
+    key: str
+    title: str
+    desc: str
+    kind: str
+    apply: Callable[["Game"], None]
+
+
+# ----------------------------
+# Effects
+# ----------------------------
+class Spark:
+    def __init__(self, x: float, y: float, big: bool = False):
+        self.pos = pygame.Vector2(x, y)
+        spd = 220 if not big else 320
+        self.vel = pygame.Vector2(random.uniform(-spd, spd), random.uniform(-spd * 1.2, -spd * 0.35))
+        self.ttl = 0.25 if not big else 0.34
+        self.alive = True
+        self.big = big
+
+    def update(self, dt: float):
+        self.ttl -= dt
+        if self.ttl <= 0:
+            self.alive = False
+            return
+        self.vel.y += 950 * dt
+        self.pos += self.vel * dt
+
+    def draw(self, screen, cam_x: float):
+        if not self.alive:
+            return
+        x = int(self.pos.x - cam_x)
+        y = int(self.pos.y)
+        r = 2 if not self.big else 3
+        pygame.draw.circle(screen, COL_HIT_SPARK, (x, y), r)
+        pygame.draw.circle(screen, COL_OUTLINE, (x, y), r, 1)
+
+
+class DeathEffect:
+    def __init__(self, kind: str, x: float, y: float):
+        self.kind = kind
+        self.pos = pygame.Vector2(x, y)
+        self.t = 1.35
+        self.alive = True
+        self.pieces: List[Tuple[pygame.Vector2, pygame.Vector2, float, int]] = []
+        if self.kind == "golem":
+            for _ in range(36):
+                px = x + random.uniform(-70, 70)
+                py = y + random.uniform(-70, 70)
+                vel = pygame.Vector2(random.uniform(-240, 240), random.uniform(-520, -120))
+                size = random.randint(6, 12)
+                ttl = random.uniform(0.65, 1.35)
+                self.pieces.append((pygame.Vector2(px, py), vel, ttl, size))
+
+    def update(self, dt: float):
+        self.t -= dt
+        if self.kind == "golem":
+            new_pieces = []
+            for p, v, ttl, size in self.pieces:
+                ttl -= dt
+                if ttl > 0:
+                    v.y += 980 * dt
+                    p += v * dt
+                    new_pieces.append((p, v, ttl, size))
+            self.pieces = new_pieces
+            if self.t <= 0 and not self.pieces:
+                self.alive = False
+        else:
+            if self.t <= 0:
+                self.alive = False
+
+    def draw(self, screen, cam_x: float):
+        if not self.alive:
+            return
+        x = self.pos.x - cam_x
+        y = self.pos.y
+        alpha = int(255 * clamp(self.t / 1.35, 0, 1))
+        if self.kind == "dragon":
+            r = int(50 + (1.35 - self.t) * 150)
+            s = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
+            col1 = (80, 80, 90, alpha // 3)
+            col2 = (140, 110, 90, alpha // 5)
+            pygame.draw.circle(s, col1, (r, r), r)
+            pygame.draw.circle(s, col2, (r, r), max(1, r - 30))
+            screen.blit(s, (int(x - r), int(y - r + 10)))
+            return
+        if self.kind == "golem":
+            fade = clamp(self.t / 1.35, 0.0, 1.0)
+            ring_r = int(40 + (1.35 - self.t) * 120)
+            s = pygame.Surface((ring_r * 2, ring_r * 2), pygame.SRCALPHA)
+            pygame.draw.circle(s, (180, 210, 255, int(60 * fade)), (ring_r, ring_r), ring_r)
+            screen.blit(s, (int(x - ring_r), int(y - ring_r + 18)))
+            for p, v, ttl, size in self.pieces:
+                a = int(200 * clamp(ttl / 1.35, 0, 1) * fade)
+                rx = int(p.x - cam_x)
+                ry = int(p.y)
+                rect = pygame.Rect(rx - size // 2, ry - size // 2, size, size)
+                pygame.draw.rect(screen, (120, 120, 140, a), rect, border_radius=3)
+                pygame.draw.rect(screen, (10, 10, 14, a), rect, 1, border_radius=3)
+            return
+        r = int(50 + (1.35 - self.t) * 150)
+        s = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
+        pygame.draw.circle(s, (220, 80, 80, alpha // 2), (r, r), r)
+        screen.blit(s, (int(x - r), int(y - r + 10)))
+
+
+class Shockwave:
+    def __init__(self, x: float, y: float):
+        self.pos = pygame.Vector2(x, y)
+        self.r = 10.0
+        self.speed = 520.0
+        self.ttl = 0.55
+        self.alive = True
+
+    def update(self, dt: float):
+        self.ttl -= dt
+        if self.ttl <= 0:
+            self.alive = False
+            return
+        self.r += self.speed * dt
+
+    def draw(self, screen, cam_x: float):
+        if not self.alive:
+            return
+        a = int(255 * clamp(self.ttl / 0.55, 0, 1))
+        sx = int(self.pos.x - cam_x)
+        sy = int(self.pos.y)
+        pygame.draw.circle(screen, (255, 180, 140, a), (sx, sy), int(self.r), 3)
+        pygame.draw.circle(screen, (10, 10, 14, a), (sx, sy), int(self.r), 1)
+
+
+class GolemWall:
+    def __init__(self, x: float, y: float, direction: int):
+        self.rect = pygame.Rect(int(x), int(y), 46, 120)
+        self.vx = 520.0 * direction
+        self.ttl = 1.15
+        self.alive = True
+
+    def update(self, dt: float, level_width: int):
+        self.ttl -= dt
+        if self.ttl <= 0:
+            self.alive = False
+            return
+        self.rect.x += int(self.vx * dt)
+        if self.rect.right < 0 or self.rect.left > level_width + 50:
+            self.alive = False
+
+    def draw(self, screen, cam_x: float, t: float):
+        if not self.alive:
+            return
+        r = self.rect.move(-int(cam_x), 0)
+        pulse = 0.5 + 0.5 * math.sin(t * 10 + r.x * 0.02)
+        glow = int(60 + 80 * pulse)
+        pygame.draw.rect(screen, (105, 105, 120), r, border_radius=14)
+        pygame.draw.rect(screen, (10, 10, 14), r, 2, border_radius=14)
+        pygame.draw.line(screen, (165, 185, 255, glow), (r.centerx, r.y + 10), (r.centerx - 8, r.bottom - 10), 2)
+        pygame.draw.line(screen, (165, 185, 255, glow), (r.centerx - 10, r.y + 28), (r.centerx + 10, r.y + 52), 2)
+
+
+# ----------------------------
+# World Objects
+# ----------------------------
+class Platform:
+    def __init__(self, rect: pygame.Rect):
+        self.rect = rect
+
+    def draw(self, screen, cam_x: float):
+        r = self.rect.move(-int(cam_x), 0)
+        pygame.draw.rect(screen, COL_PLATFORM, r, border_radius=9)
+        pygame.draw.rect(screen, COL_PLATFORM_EDGE, r, width=2, border_radius=9)
+
+
+class BigDoor:
+    def __init__(self, x, y):
+        self.rect = pygame.Rect(int(x), int(y), 108, 168)
+        self.open = False
+        self.locked = False
+
+    def update(self, hunger: float, locked: bool, force_open: bool = False):
+        self.locked = locked
+        self.open = True if force_open else (hunger >= DOOR_THRESHOLD and not locked)
+
+    def draw(self, screen, cam_x: float):
+        r = self.rect.move(-int(cam_x), 0)
+        frame = r.inflate(10, 10)
+        pygame.draw.rect(screen, (38, 38, 50), frame, border_radius=32)
+        pygame.draw.rect(screen, COL_OUTLINE, frame, 3, border_radius=32)
+        door = r.copy()
+        door_col = (210, 210, 225) if self.open else (60, 60, 78)
+        pygame.draw.rect(screen, door_col, door, border_radius=30)
+        pygame.draw.rect(screen, COL_OUTLINE, door, 2, border_radius=30)
+        inset = door.inflate(-18, -26)
+        pygame.draw.rect(screen, (22, 22, 30), inset, width=2, border_radius=26)
+        for yy in (door.y + 60, door.y + 112):
+            band = pygame.Rect(door.x + 12, yy, door.w - 24, 12)
+            pygame.draw.rect(screen, (20, 20, 26), band, border_radius=7)
+            pygame.draw.rect(screen, COL_OUTLINE, band, width=2, border_radius=7)
+        knob = pygame.Rect(door.centerx + 22, door.centery + 18, 10, 10)
+        pygame.draw.rect(screen, (10, 10, 14), knob, border_radius=4)
+        pygame.draw.rect(screen, (120, 120, 150), knob, width=2, border_radius=4)
+        if self.locked:
+            lock = pygame.Rect(door.centerx - 14, door.y + 22, 28, 22)
+            pygame.draw.rect(screen, (12, 12, 18), lock, border_radius=8)
+            pygame.draw.rect(screen, (140, 140, 175), lock, width=2, border_radius=8)
+            pygame.draw.circle(screen, (140, 140, 175), (lock.centerx, lock.centery + 3), 3)
+
+
+class PillarTelegraph:
+    def __init__(self, x: float, delay: float = 0.65, max_h: int = 150):
+        self.x = float(x)
+        self.delay = delay
+        self.max_h = max_h
+        self.alive = True
+        self.r = 22
+        self.t = delay
+
+    def update(self, dt: float) -> bool:
+        self.t -= dt
+        if self.t <= 0:
+            self.alive = False
+            return True
+        return False
+
+    def draw(self, screen, cam_x: float, time_s: float):
+        if not self.alive:
+            return
+        sx = int(self.x - cam_x)
+        sy = GROUND_Y
+        pulse = 0.5 + 0.5 * math.sin(time_s * 10)
+        a = int(80 + 90 * pulse)
+        s = pygame.Surface((self.r * 2 + 20, self.r * 2 + 20), pygame.SRCALPHA)
+        pygame.draw.circle(s, (255, 120, 90, a), (s.get_width() // 2, s.get_height() // 2), self.r + 6)
+        pygame.draw.circle(s, (0, 0, 0, 120), (s.get_width() // 2, s.get_height() // 2), self.r)
+        cx, cy = s.get_width() // 2, s.get_height() // 2
+        for i in range(4):
+            ang = i * (math.pi / 2) + (0.3 * math.sin(time_s * 4 + i))
+            x2 = cx + math.cos(ang) * (self.r - 3)
+            y2 = cy + math.sin(ang) * (self.r - 3)
+            pygame.draw.line(s, (255, 180, 160, 190), (cx, cy), (x2, y2), 2)
+        screen.blit(s, (sx - s.get_width() // 2, sy - s.get_height() // 2))
+
+
+class PillarHazard:
+    def __init__(self, x: float, max_h: int = 140):
+        self.x = float(x)
+        self.bottom = GROUND_Y
+        self.max_h = max_h
+        self.h = 0.0
+        self.rise_speed = 900.0
+        self.life = 1.2
+        self.alive = True
+        self.rect = pygame.Rect(int(self.x), self.bottom, 28, 0)
+
+    def update(self, dt: float):
+        if not self.alive:
+            return
+        if self.h < self.max_h:
+            self.h = min(self.max_h, self.h + self.rise_speed * dt)
+        else:
+            self.life -= dt
+            if self.life <= 0:
+                self.alive = False
+        self.rect = pygame.Rect(int(self.x) - 14, int(self.bottom - self.h), 28, int(self.h))
+
+    def draw(self, screen, cam_x: float):
+        if not self.alive:
+            return
+        r = self.rect.move(-int(cam_x), 0)
+        pygame.draw.rect(screen, COL_PILLAR, r, border_radius=10)
+        pygame.draw.rect(screen, COL_OUTLINE, r, width=2, border_radius=10)
+        pygame.draw.line(screen, (140, 140, 165), (r.centerx, r.y + 8), (r.centerx - 6, r.bottom - 8), 2)
+
+
+class FirePatch:
+    def __init__(self, x: float, y: float, w: int = 66, ttl: float = 2.4):
+        self.rect = pygame.Rect(int(x - w // 2), int(y - 12), w, 16)
+        self.ttl = ttl
+        self.alive = True
+
+    def update(self, dt: float):
+        self.ttl -= dt
+        if self.ttl <= 0:
+            self.alive = False
+
+    def draw(self, screen, cam_x: float, t: float):
+        if not self.alive:
+            return
+        r = self.rect.move(-int(cam_x), 0)
+        s = pygame.Surface((r.w, r.h), pygame.SRCALPHA)
+        a = int(120 + 80 * math.sin(t * 9))
+        pygame.draw.ellipse(s, (255, 120, 50, a), pygame.Rect(0, 0, r.w, r.h))
+        pygame.draw.ellipse(s, (255, 210, 90, a // 2), pygame.Rect(6, 3, r.w - 12, r.h - 6))
+        screen.blit(s, r.topleft)
+        pygame.draw.rect(screen, COL_OUTLINE, r, 1, border_radius=8)
+
+
+class Food:
+    def __init__(self, x: float, y: float, kind: str, amount: float, ttl: float):
+        self.kind = kind
+        self.amount = amount
+        self.ttl = ttl
+        self.pos = pygame.Vector2(x, y)
+        self.base_y = y
+        self.alive = True
+        self.rect = pygame.Rect(int(x), int(y), 18, 14)
+
+    def update(self, dt: float, t: float):
+        self.ttl -= dt
+        if self.ttl <= 0:
+            self.alive = False
+            return
+        self.pos.y = self.base_y + math.sin(t * 3.2 + self.pos.x * 0.01) * 4.0
+        self.rect.topleft = (int(self.pos.x), int(self.pos.y))
+
+    def draw(self, screen, cam_x: float, t: float):
+        if not self.alive:
+            return
+        r = self.rect.move(-int(cam_x), 0)
+        pulse = 0.5 + 0.5 * math.sin(t * 6.2 + self.pos.x * 0.03)
+        rr = r.inflate(10, 10)
+        rr.y -= 4
+        pygame.draw.ellipse(screen, (0, 0, 0), pygame.Rect(rr.centerx - 12, rr.bottom - 2, 24, 8))
+        if self.kind == "snack":
+            body = pygame.Rect(rr.x + 5, rr.y + 3, rr.w - 10, rr.h - 4)
+            pygame.draw.ellipse(screen, (212, 72, 66), body)
+            pygame.draw.ellipse(screen, COL_OUTLINE, body, 2)
+            pygame.draw.arc(screen, (245, 155, 140), body.inflate(-6, -6), 3.7, 5.3, 2)
+            pygame.draw.line(screen, (90, 55, 28), (body.centerx, body.y + 1), (body.centerx + 2, body.y - 6), 2)
+            leaf = [(body.centerx + 3, body.y - 4), (body.centerx + 10, body.y - 8), (body.centerx + 8, body.y + 1)]
+            pygame.draw.polygon(screen, (92, 175, 88), leaf)
+            pygame.draw.polygon(screen, COL_OUTLINE, leaf, 1)
+        elif self.kind == "meal":
+            loaf = pygame.Rect(rr.x + 2, rr.y + 5, rr.w - 4, rr.h - 6)
+            pygame.draw.ellipse(screen, (195, 132, 72), loaf)
+            pygame.draw.ellipse(screen, COL_OUTLINE, loaf, 2)
+            for off in (-7, 0, 7):
+                pygame.draw.arc(screen, (232, 190, 122), pygame.Rect(loaf.centerx + off - 6, loaf.y + 2, 12, loaf.h - 4), 0.8, 2.3, 2)
+            cheese = pygame.Rect(loaf.x + 3, loaf.bottom - 7, 12, 7)
+            pygame.draw.rect(screen, (245, 215, 110), cheese, border_radius=3)
+            pygame.draw.rect(screen, COL_OUTLINE, cheese, 1, border_radius=3)
+        else:
+            platter = pygame.Rect(rr.x + 1, rr.y + 9, rr.w - 2, 7)
+            pygame.draw.ellipse(screen, (170, 170, 185), platter)
+            pygame.draw.ellipse(screen, COL_OUTLINE, platter, 1)
+            roast = pygame.Rect(rr.x + 5, rr.y + 2, rr.w - 10, rr.h - 8)
+            pygame.draw.ellipse(screen, (224, 156, 76), roast)
+            pygame.draw.ellipse(screen, COL_OUTLINE, roast, 2)
+            glaze = pygame.Rect(roast.x + 4, roast.y + 2, roast.w - 8, roast.h // 2)
+            pygame.draw.ellipse(screen, (255, 214, 132), glaze)
+            bone = pygame.Rect(roast.right - 1, roast.centery - 3, 10, 6)
+            pygame.draw.rect(screen, (236, 236, 244), bone, border_radius=3)
+            pygame.draw.circle(screen, (236, 236, 244), (bone.right, bone.y + 1), 3)
+            pygame.draw.circle(screen, (236, 236, 244), (bone.right, bone.bottom - 1), 3)
+            pygame.draw.rect(screen, COL_OUTLINE, bone, 1, border_radius=3)
+            draw_sparkle(screen, roast.centerx, roast.y - 3, 3, (255, 245, 190))
+        highlight = pygame.Surface((rr.w, rr.h), pygame.SRCALPHA)
+        pygame.draw.ellipse(highlight, (255, 255, 255, int(18 + 16 * pulse)), pygame.Rect(4, 2, rr.w // 2, rr.h // 2))
+        screen.blit(highlight, rr.topleft)
+        if self.ttl < 2.0 and int(t * 10) % 2 == 0:
+            pygame.draw.ellipse(screen, (255, 255, 255), rr.inflate(8, 6), 1)
+
+
+# ----------------------------
+# Projectiles
+# ----------------------------
+class Projectile:
+    def __init__(self, kind: str, x: float, y: float, vx: float, vy: float, dmg: float, owner: str, ttl: float = 4.0):
+        self.kind = kind
+        self.owner = owner
+        self.dmg = dmg
+        self.ttl = ttl
+        self.pos = pygame.Vector2(x, y)
+        self.vel = pygame.Vector2(vx, vy)
+        self.alive = True
+        self.rect = pygame.Rect(int(x), int(y), 18, 18)
+        if kind == "arrow":
+            self.rect.size = (22, 10)
+        elif kind == "slime":
+            self.rect.size = (16, 16)
+        self.hit_ground = False
+        self.hit_pos: Optional[Tuple[float, float]] = None
+
+    def reflect(self, facing: int, new_dmg: float):
+        self.owner = "player"
+        self.dmg = new_dmg
+        speed = max(420.0, abs(self.vel.x) * 1.1)
+        self.vel.x = speed * facing
+        if self.kind in ("slime", "fire"):
+            self.vel.y = -220.0
+
+    def update(self, dt: float, platforms: List[Platform]):
+        if not self.alive:
+            return
+        self.ttl -= dt
+        if self.ttl <= 0:
+            self.alive = False
+            return
+        if self.kind in ("slime", "fire"):
+            self.vel.y += (780.0 if self.kind == "slime" else 520.0) * dt
+        self.pos += self.vel * dt
+        self.rect.topleft = (int(self.pos.x), int(self.pos.y))
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                self.alive = False
+                if self.kind == "fire":
+                    self.hit_ground = True
+                    self.hit_pos = (self.rect.centerx, self.rect.bottom)
+                return
+        if self.rect.y > HEIGHT + 220 or self.rect.y < -420:
+            self.alive = False
+
+    def draw(self, screen, cam_x: float, t: float):
+        if not self.alive:
+            return
+        cx = self.rect.centerx - cam_x
+        cy = self.rect.centery
+        if self.kind == "arrow":
+            draw_rotated_arrow(screen, cx, cy, self.vel.x, self.vel.y, owner_player=(self.owner == "player"))
+        elif self.kind == "slime":
+            r = self.rect.move(-int(cam_x), 0)
+            pygame.draw.ellipse(screen, (120, 230, 170), r)
+            pygame.draw.ellipse(screen, COL_OUTLINE, r, width=2)
+        else:
+            r = self.rect.move(-int(cam_x), 0)
+            s = pygame.Surface((r.w + 22, r.h + 22), pygame.SRCALPHA)
+            cx2, cy2 = (r.w + 22) // 2, (r.h + 22) // 2
+            a = int(120 + 90 * math.sin(t * 12))
+            pygame.draw.circle(s, (*COL_FIRE, a), (cx2, cy2), 14)
+            pygame.draw.circle(s, (*COL_FIRE2, a // 2), (cx2 + 2, cy2 - 2), 8)
+            screen.blit(s, (r.x - 11, r.y - 11))
+            pygame.draw.ellipse(screen, COL_OUTLINE, r, width=2)
+
+
+# ----------------------------
+# Enemy Base
+# ----------------------------
+class EnemyBase:
+    def __init__(self):
+        self.alive = True
+        self.rect = pygame.Rect(0, 0, 1, 1)
+        self.hp = 1
+        self.max_hp = 1
+        self.last_hit_serial = -1
+        self.flash_t = 0.0
+        self.is_boss = False
+        self.name = "Enemy"
+
+    def can_take_hit(self, serial: int) -> bool:
+        return self.last_hit_serial != serial
+
+    def take_hit(self, dmg: int, serial: int) -> bool:
+        if not self.alive or not self.can_take_hit(serial):
+            return False
+        self.last_hit_serial = serial
+        self.hp -= dmg
+        self.flash_t = 0.12
+        if self.hp <= 0:
+            self.alive = False
+            return True
+        return False
+
+    def update_flash(self, dt: float):
+        if self.flash_t > 0:
+            self.flash_t = max(0.0, self.flash_t - dt)
+
+    def touch_damage(self) -> float:
+        return TOUCH_PENALTY
+
+    def touch_slow(self) -> bool:
+        return False
+
+
+# ----------------------------
+# Regular Enemies
+# ----------------------------
+class Goblin(EnemyBase):
+    def __init__(self, x: float, y: float, hp: int):
+        super().__init__()
+        self.pos = pygame.Vector2(x, y)
+        self.vel = pygame.Vector2(0, 0)
+        self.rect = pygame.Rect(int(x), int(y), GOBLIN_W, GOBLIN_H)
+        self.hp = hp
+        self.max_hp = hp
+        self.anim = random.random() * 10.0
+        self.facing = 1
+        self.name = "Goblin"
+
+    def update(self, dt: float, platforms: List[Platform], player_x: float, level: int):
+        if not self.alive:
+            return
+        self.update_flash(dt)
+        if getattr(self, 'attack_anim_t', 0.0) > 0:
+            self.attack_anim_t = max(0.0, self.attack_anim_t - dt)
+        self.anim += dt
+        self.facing = -1 if player_x < self.rect.centerx else 1
+        speed = GOBLIN_SPEED + min(70.0, level * 2.6)
+        self.vel.x = self.facing * speed
+        self.vel.y += GRAVITY * dt
+        self.pos.x += self.vel.x * dt
+        self.rect.x = int(self.pos.x)
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                if self.vel.x > 0:
+                    self.rect.right = p.rect.left
+                else:
+                    self.rect.left = p.rect.right
+                self.pos.x = self.rect.x
+        self.pos.y += self.vel.y * dt
+        self.rect.y = int(self.pos.y)
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                if self.vel.y > 0:
+                    self.rect.bottom = p.rect.top
+                else:
+                    self.rect.top = p.rect.bottom
+                self.pos.y = self.rect.y
+                self.vel.y = 0
+
+    def draw(self, screen, cam_x: float):
+        if not self.alive:
+            return
+        r = self.rect.move(-int(cam_x), 0)
+        flash = self.flash_t > 0 and int(self.flash_t * 60) % 2 == 0
+        col_body = (235, 235, 245) if flash else COL_GOBLIN
+        col_dark = (235, 235, 245) if flash else COL_GOBLIN_DARK
+        t = self.anim
+        speed_factor = clamp(abs(self.vel.x) / 230.0, 0.0, 1.0)
+        step = math.sin(t * (9.2 + 4.0 * speed_factor)) * (5.0 * speed_factor)
+        bob = int(math.sin(t * 7.5) * (1.5 if speed_factor > 0.15 else 0.7))
+        rr = pygame.Rect(r.x, r.y + bob, r.w, r.h)
+        pygame.draw.ellipse(screen, (0, 0, 0), pygame.Rect(rr.centerx - 17, rr.bottom - 6, 34, 10))
+        leg1 = pygame.Rect(rr.x + 9, rr.bottom - 18, 10, 18)
+        leg2 = pygame.Rect(rr.right - 19, rr.bottom - 18, 10, 18)
+        leg1.y += int(step)
+        leg2.y -= int(step)
+        for lg in (leg1, leg2):
+            pygame.draw.rect(screen, col_dark, lg, border_radius=4)
+            pygame.draw.rect(screen, COL_OUTLINE, lg, 1, border_radius=4)
+        torso = pygame.Rect(rr.x + 7, rr.y + 13, rr.w - 14, rr.h - 22)
+        pygame.draw.rect(screen, col_body, torso, border_radius=12)
+        pygame.draw.rect(screen, COL_OUTLINE, torso, 2, border_radius=12)
+        tunic = pygame.Rect(torso.x + 4, torso.y + 10, torso.w - 8, torso.h - 14)
+        pygame.draw.rect(screen, COL_GOBLIN_ACCENT, tunic, border_radius=9)
+        pygame.draw.rect(screen, COL_OUTLINE, tunic, 1, border_radius=9)
+        belt = pygame.Rect(tunic.x, tunic.centery + 3, tunic.w, 5)
+        pygame.draw.rect(screen, (70, 55, 40), belt, border_radius=3)
+        head = pygame.Rect(rr.centerx - 13, rr.y + 2, 26, 20)
+        pygame.draw.ellipse(screen, col_body, head)
+        pygame.draw.ellipse(screen, COL_OUTLINE, head, 2)
+        ear_y = head.centery - 1
+        ear1 = [(head.x + 2, ear_y), (head.x - 7, ear_y - 6), (head.x + 4, ear_y + 2)]
+        ear2 = [(head.right - 2, ear_y), (head.right + 7, ear_y - 6), (head.right - 4, ear_y + 2)]
+        pygame.draw.polygon(screen, col_body, ear1)
+        pygame.draw.polygon(screen, col_body, ear2)
+        pygame.draw.polygon(screen, COL_OUTLINE, ear1, 1)
+        pygame.draw.polygon(screen, COL_OUTLINE, ear2, 1)
+        eye_y = head.centery
+        pygame.draw.circle(screen, (248, 235, 120), (head.centerx - 5, eye_y), 2)
+        pygame.draw.circle(screen, (248, 235, 120), (head.centerx + 5, eye_y), 2)
+        pygame.draw.line(screen, COL_OUTLINE, (head.centerx - 2, eye_y + 3), (head.centerx + 2, eye_y + 4), 1)
+        tooth1 = [(head.centerx - 4, head.bottom - 1), (head.centerx - 2, head.bottom - 6), (head.centerx, head.bottom - 1)]
+        tooth2 = [(head.centerx + 2, head.bottom - 1), (head.centerx + 4, head.bottom - 6), (head.centerx + 6, head.bottom - 1)]
+        pygame.draw.polygon(screen, (235, 235, 245), tooth1)
+        pygame.draw.polygon(screen, (235, 235, 245), tooth2)
+        arm_l = pygame.Rect(torso.x - 4, torso.y + 14, 8, 16)
+        arm_r = pygame.Rect(torso.right - 4, torso.y + 12, 8, 17)
+        arm_l.y -= int(step * 0.4)
+        arm_r.y += int(step * 0.35)
+        for a in (arm_l, arm_r):
+            pygame.draw.rect(screen, col_dark, a, border_radius=4)
+            pygame.draw.rect(screen, COL_OUTLINE, a, 1, border_radius=4)
+        shield = pygame.Rect(torso.centerx - 16 - 18 * self.facing, torso.y + 10, 18, 22)
+        pygame.draw.rect(screen, COL_GOBLIN_ARMOR, shield, border_radius=8)
+        pygame.draw.rect(screen, COL_OUTLINE, shield, 2, border_radius=8)
+        pygame.draw.line(screen, (185, 210, 240), (shield.centerx, shield.y + 4), (shield.centerx, shield.bottom - 4), 2)
+        hx = torso.centerx + (18 if self.facing > 0 else -18)
+        hy = torso.centery + 7
+        tip = (hx + 20 * self.facing, hy - 15)
+        base = (hx - 2 * self.facing, hy + 7)
+        pygame.draw.line(screen, (225, 225, 235), base, tip, 4)
+        pygame.draw.line(screen, COL_OUTLINE, base, tip, 2)
+        pygame.draw.circle(screen, (110, 80, 52), base, 2)
+        draw_hp_bar(screen, rr.centerx - 18, rr.y - 11, 36, 7, self.hp, self.max_hp)
+
+
+class SkeletonArcher(EnemyBase):
+    def __init__(self, x: float, y: float, hp: int):
+        super().__init__()
+        self.pos = pygame.Vector2(x, y)
+        self.vel = pygame.Vector2(0, 0)
+        self.rect = pygame.Rect(int(x), int(y), SKELE_W, SKELE_H)
+        self.hp = hp
+        self.max_hp = hp
+        self.shoot_cd = 2.0 + random.random() * 0.8
+        self.facing = 1
+        self.name = "Skeleton"
+
+    def _arrow_speed(self, level: int, hard: bool) -> float:
+        spd = ARROW_SPEED_BASE + (level - 1) * ARROW_SPEED_PER_LEVEL
+        if hard:
+            spd *= 1.12
+        return clamp(spd, ARROW_SPEED_BASE, ARROW_SPEED_CAP)
+
+    def update(self, dt: float, platforms: List[Platform], player_pos: pygame.Vector2,
+               projectiles: List[Projectile], level: int, hard: bool):
+        if not self.alive:
+            return
+        self.update_flash(dt)
+        dx = player_pos.x - self.rect.centerx
+        self.facing = -1 if dx < 0 else 1
+        self.vel.x = self.facing * SKELE_SPEED * 0.25
+        self.vel.y += GRAVITY * dt
+        self.pos.x += self.vel.x * dt
+        self.rect.x = int(self.pos.x)
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                if self.vel.x > 0:
+                    self.rect.right = p.rect.left
+                else:
+                    self.rect.left = p.rect.right
+                self.pos.x = self.rect.x
+                self.vel.x = 0
+        self.pos.y += self.vel.y * dt
+        self.rect.y = int(self.pos.y)
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                if self.vel.y > 0:
+                    self.rect.bottom = p.rect.top
+                else:
+                    self.rect.top = p.rect.bottom
+                self.pos.y = self.rect.y
+                self.vel.y = 0
+        self.shoot_cd -= dt
+        if self.shoot_cd <= 0:
+            spd = self._arrow_speed(level, hard)
+            ax = self.rect.centerx + self.facing * 18
+            ay = self.rect.y + 18
+            projectiles.append(Projectile("arrow", ax, ay, self.facing * spd, 0.0, ARROW_PENALTY, owner="enemy", ttl=4.0))
+            base = 2.1 - min(0.9, level * 0.03)
+            if hard:
+                base *= 0.80
+            self.shoot_cd = base + random.random() * 0.65
+
+    def draw(self, screen, cam_x: float):
+        if not self.alive:
+            return
+        r = self.rect.move(-int(cam_x), 0)
+        flash = self.flash_t > 0 and int(self.flash_t * 60) % 2 == 0
+        t = pygame.time.get_ticks() * 0.001
+        col = (235, 235, 245) if flash else COL_SKELE
+        hood = (78, 78, 96) if not flash else (235, 235, 245)
+        speed_factor = clamp(abs(self.vel.x) / 110.0, 0.0, 1.0)
+        step = math.sin(t * (8.5 + 3.0 * speed_factor)) * (3.0 * speed_factor)
+        bob = int(math.sin(t * 7.0 + self.rect.centerx * 0.02) * 0.8)
+        rr = pygame.Rect(r.x, r.y + bob, r.w, r.h)
+        pygame.draw.ellipse(screen, (0, 0, 0), pygame.Rect(rr.centerx - 15, rr.bottom - 6, 30, 10))
+        leg1 = pygame.Rect(rr.x + 8, rr.bottom - 18, 9, 18)
+        leg2 = pygame.Rect(rr.right - 17, rr.bottom - 18, 9, 18)
+        leg1.y += int(step)
+        leg2.y -= int(step)
+        for lg in (leg1, leg2):
+            pygame.draw.rect(screen, col, lg, border_radius=4)
+            pygame.draw.rect(screen, COL_OUTLINE, lg, 1, border_radius=4)
+        torso = pygame.Rect(rr.x + 8, rr.y + 15, rr.w - 16, rr.h - 23)
+        pygame.draw.rect(screen, hood, torso, border_radius=12)
+        pygame.draw.rect(screen, COL_OUTLINE, torso, 2, border_radius=12)
+        rib = pygame.Rect(torso.x + 4, torso.y + 6, torso.w - 8, torso.h - 12)
+        pygame.draw.rect(screen, col, rib, border_radius=10)
+        pygame.draw.rect(screen, COL_OUTLINE, rib, 1, border_radius=10)
+        for i in range(4):
+            yy = rib.y + 7 + i * 7
+            pygame.draw.line(screen, COL_SKELE_ACCENT, (rib.x + 4, yy), (rib.right - 4, yy), 2)
+        skull = pygame.Rect(rr.centerx - 13, rr.y + 2, 26, 19)
+        pygame.draw.rect(screen, col, skull, border_radius=10)
+        pygame.draw.rect(screen, COL_OUTLINE, skull, 2, border_radius=10)
+        jaw = pygame.Rect(skull.x + 5, skull.bottom - 5, skull.w - 10, 6)
+        pygame.draw.rect(screen, col, jaw, border_radius=4)
+        pygame.draw.rect(screen, COL_OUTLINE, jaw, 1, border_radius=4)
+        pygame.draw.rect(screen, (20, 20, 26), pygame.Rect(skull.x + 6, skull.y + 7, 5, 5), border_radius=3)
+        pygame.draw.rect(screen, (20, 20, 26), pygame.Rect(skull.right - 11, skull.y + 7, 5, 5), border_radius=3)
+        hood_top = [(skull.x + 2, skull.y + 5), (skull.centerx, skull.y - 7), (skull.right - 2, skull.y + 5)]
+        pygame.draw.polygon(screen, hood, hood_top)
+        pygame.draw.polygon(screen, COL_OUTLINE, hood_top, 1)
+        arm_l = pygame.Rect(torso.x - 3, torso.y + 13, 7, 17)
+        arm_r = pygame.Rect(torso.right - 4, torso.y + 13, 7, 17)
+        aiming = self.shoot_cd < 0.5
+        if aiming:
+            arm_r.y -= 7
+            arm_l.y -= 2
+        else:
+            arm_r.y += int(step * 0.35)
+            arm_l.y -= int(step * 0.35)
+        for a in (arm_l, arm_r):
+            pygame.draw.rect(screen, col, a, border_radius=4)
+            pygame.draw.rect(screen, COL_OUTLINE, a, 1, border_radius=4)
+        bx = rr.centerx + self.facing * 14
+        by = rr.centery - (7 if aiming else 2)
+        pygame.draw.arc(screen, (128, 102, 72), pygame.Rect(bx - 10, by - 18, 20, 36), -1.2, 1.2, 3)
+        pygame.draw.line(screen, (220, 220, 230), (bx, by - 16), (bx, by + 16), 1)
+        quiver = pygame.Rect(torso.x + (2 if self.facing > 0 else torso.w - 12), torso.y + 6, 10, 20)
+        pygame.draw.rect(screen, (82, 62, 46), quiver, border_radius=4)
+        pygame.draw.rect(screen, COL_OUTLINE, quiver, 1, border_radius=4)
+        for off in (2, 5, 8):
+            pygame.draw.line(screen, (210, 210, 225), (quiver.x + off, quiver.y + 2), (quiver.x + off - 1, quiver.y - 4), 1)
+        draw_hp_bar(screen, rr.centerx - 18, rr.y - 10, 36, 7, self.hp, self.max_hp)
+
+
+class PillarCasterGolem(EnemyBase):
+    def __init__(self, x: float, y: float, hp: int):
+        super().__init__()
+        self.pos = pygame.Vector2(x, y)
+        self.vel = pygame.Vector2(0, 0)
+        self.rect = pygame.Rect(int(x), int(y), CASTER_W, CASTER_H)
+        self.hp = hp
+        self.max_hp = hp
+        self.cast_cd = 1.2 + random.random() * 0.8
+        self.facing = 1
+        self.name = "Caster"
+
+    def touch_damage(self) -> float:
+        return TOUCH_PENALTY + 2.0
+
+    def update(self, dt: float, platforms: List[Platform], player_x: float, player_trail: List[int],
+               hazards: List[PillarHazard], level: int, level_width: int, hard: bool):
+        if not self.alive:
+            return
+        self.update_flash(dt)
+        self.facing = -1 if player_x < self.rect.centerx else 1
+        self.vel.x = self.facing * CASTER_SPEED
+        self.vel.y += GRAVITY * dt
+        self.pos.x += self.vel.x * dt
+        self.rect.x = int(self.pos.x)
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                if self.vel.x > 0:
+                    self.rect.right = p.rect.left
+                else:
+                    self.rect.left = p.rect.right
+                self.pos.x = self.rect.x
+                self.vel.x = 0.0
+        self.pos.y += self.vel.y * dt
+        self.rect.y = int(self.pos.y)
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                if self.vel.y > 0:
+                    self.rect.bottom = p.rect.top
+                else:
+                    self.rect.top = p.rect.bottom
+                self.pos.y = self.rect.y
+                self.vel.y = 0.0
+        self.cast_cd -= dt
+        if self.cast_cd <= 0:
+            target = player_trail[max(0, len(player_trail) - 18)] if player_trail else int(player_x)
+            spots = [target, target + random.randint(-120, -50), target + random.randint(50, 120)]
+            if hard:
+                spots.append(target + random.randint(-170, 170))
+            for sx in spots:
+                hazards.append(PillarHazard(clamp(sx, 90, level_width - 120), max_h=120))
+            base = max(1.0, CASTER_PILLAR_CD - min(0.6, (level - 10) * 0.03))
+            if hard:
+                base *= 0.80
+            if self.hp <= max(1, int(self.max_hp * 0.35)):
+                base = max(0.85, CASTER_LOWHP_CD - min(0.4, (level - 10) * 0.02))
+                if hard:
+                    base *= 0.80
+            self.cast_cd = base + random.random() * 0.4
+
+    def draw(self, screen, cam_x: float):
+        if not self.alive:
+            return
+        r = self.rect.move(-int(cam_x), 0)
+        flash = self.flash_t > 0 and int(self.flash_t * 60) % 2 == 0
+        t = pygame.time.get_ticks() * 0.001
+        hover = int(math.sin(t * 5.5 + self.rect.centerx * 0.01) * 2.5)
+        rr = r.move(0, hover)
+        col = (235, 235, 245) if flash else COL_CASTER
+        pygame.draw.rect(screen, col, rr, border_radius=16)
+        pygame.draw.rect(screen, COL_OUTLINE, rr, 2, border_radius=16)
+        core = pygame.Rect(rr.centerx - 11, rr.y + 16, 22, 26)
+        pulse = 0.5 + 0.5 * math.sin(t * 9.0)
+        a = int(120 + 110 * pulse)
+        core_s = pygame.Surface((core.w + 20, core.h + 20), pygame.SRCALPHA)
+        pygame.draw.ellipse(core_s, (*COL_CASTER_ACCENT, a), core_s.get_rect().inflate(-6, -6))
+        screen.blit(core_s, (core.x - 10, core.y - 10))
+        pygame.draw.rect(screen, COL_CASTER_ACCENT, core, border_radius=10)
+        pygame.draw.rect(screen, COL_OUTLINE, core, 2, border_radius=10)
+        sx = rr.centerx + (18 if self.facing > 0 else -18)
+        pygame.draw.line(screen, (175, 175, 195), (sx, rr.y + 12), (sx, rr.bottom - 8), 4)
+        pygame.draw.line(screen, COL_OUTLINE, (sx, rr.y + 12), (sx, rr.bottom - 8), 2)
+        pygame.draw.circle(screen, (220, 235, 255), (sx, rr.y + 12), 6)
+        pygame.draw.circle(screen, COL_OUTLINE, (sx, rr.y + 12), 6, 2)
+        draw_hp_bar(screen, rr.centerx - 18, rr.y - 10, 36, 7, self.hp, self.max_hp)
+
+
+class SlimeMinion(EnemyBase):
+    def __init__(self, x: float, y: float, hp: int):
+        super().__init__()
+        self.pos = pygame.Vector2(x, y)
+        self.vel = pygame.Vector2(0, 0)
+        self.rect = pygame.Rect(int(x), int(y), SLIME_W, SLIME_H)
+        self.hp = hp
+        self.max_hp = hp
+        self.name = "Slime"
+
+    def touch_damage(self) -> float:
+        return SLIME_PENALTY
+
+    def touch_slow(self) -> bool:
+        return True
+
+    def update(self, dt: float, platforms: List[Platform], player_pos: pygame.Vector2):
+        if not self.alive:
+            return
+        self.update_flash(dt)
+        dirx = -1 if player_pos.x < self.rect.centerx else 1
+        self.vel.x = dirx * SLIME_SPEED
+        self.vel.y += GRAVITY * dt
+        self.pos.x += self.vel.x * dt
+        self.rect.x = int(self.pos.x)
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                if self.vel.x > 0:
+                    self.rect.right = p.rect.left
+                else:
+                    self.rect.left = p.rect.right
+                self.pos.x = self.rect.x
+        self.pos.y += self.vel.y * dt
+        self.rect.y = int(self.pos.y)
+        on_ground = False
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                if self.vel.y > 0:
+                    self.rect.bottom = p.rect.top
+                    on_ground = True
+                else:
+                    self.rect.top = p.rect.bottom
+                self.pos.y = self.rect.y
+                self.vel.y = 0
+        if on_ground and random.random() < 0.02:
+            self.vel.y = -520.0
+
+    def draw(self, screen, cam_x: float):
+        if not self.alive:
+            return
+        r = self.rect.move(-int(cam_x), 0)
+        flash = self.flash_t > 0 and int(self.flash_t * 60) % 2 == 0
+        t = pygame.time.get_ticks() * 0.001
+        wobble = math.sin(t * 7.5 + self.rect.centerx * 0.03)
+        rr = r.inflate(4, 5)
+        rr.y += int(wobble * 1.5)
+        body = pygame.Rect(rr.x, rr.y + 2, rr.w, rr.h - 2)
+        puddle = pygame.Rect(body.x + 2, body.bottom - 6, body.w - 4, 8)
+        pygame.draw.ellipse(screen, (0, 0, 0), pygame.Rect(body.centerx - 14, body.bottom - 2, 28, 8))
+        col = (235, 235, 245) if flash else COL_SLIME
+        inner = (250, 250, 255) if flash else COL_SLIME_ACCENT
+        pygame.draw.ellipse(screen, col, body)
+        pygame.draw.ellipse(screen, COL_OUTLINE, body, 2)
+        pygame.draw.ellipse(screen, inner, pygame.Rect(body.x + 5, body.y + 4, body.w - 10, body.h - 9))
+        pygame.draw.ellipse(screen, (80, 130, 95, 80), puddle)
+        eye_y = body.y + body.h // 2 - 2
+        pygame.draw.circle(screen, (20, 24, 28), (body.centerx - 5, eye_y), 2)
+        pygame.draw.circle(screen, (20, 24, 28), (body.centerx + 5, eye_y), 2)
+        pygame.draw.arc(screen, (26, 34, 38), pygame.Rect(body.centerx - 7, eye_y + 1, 14, 8), 0.2, 2.9, 1)
+        bubble1 = pygame.Rect(body.right - 8, body.y + 3, 6, 6)
+        bubble2 = pygame.Rect(body.x + 5, body.y + 1, 4, 4)
+        pygame.draw.ellipse(screen, (210, 255, 235), bubble1)
+        pygame.draw.ellipse(screen, (210, 255, 235), bubble2)
+        pygame.draw.ellipse(screen, COL_OUTLINE, bubble1, 1)
+        pygame.draw.ellipse(screen, COL_OUTLINE, bubble2, 1)
+        draw_hp_bar(screen, body.centerx - 16, body.y - 9, 32, 6, self.hp, self.max_hp)
+
+
+# ----------------------------
+# Bosses
+# ----------------------------
+class SlimeBoss(EnemyBase):
+    def __init__(self, x: float, y: float, hp: int):
+        super().__init__()
+        self.pos = pygame.Vector2(x, y)
+        self.vel = pygame.Vector2(170.0, 0.0)
+        self.rect = pygame.Rect(int(x), int(y), SLIME_BOSS_W, SLIME_BOSS_H)
+        self.hp = hp
+        self.max_hp = hp
+        self.spawn_cd = 1.0
+        self.shoot_cd = 0.8
+        self.slam_cd = 2.0
+        self.slam_windup_t = 0.0
+        self.land_shock_t = 0.0
+        self.slam_indicator = 0.0
+        self.on_ground = False
+        self.was_on_ground = False
+        self.slam_air = False
+        self.is_boss = True
+        self.name = "SLIME KING"
+
+    def touch_damage(self) -> float:
+        return BOSS_TOUCH_PENALTY
+
+    def is_red(self) -> bool:
+        return self.hp <= int(self.max_hp * SLIME_RED_RATIO)
+
+    def swarm(self) -> bool:
+        return self.hp <= int(self.max_hp * SLIME_SWARM_RATIO)
+
+    def update(self, dt: float, platforms: List[Platform], player_pos: pygame.Vector2,
+               enemies: List[EnemyBase], projectiles: List[Projectile], level_width: int,
+               hard: bool, on_slam: Callable[[float], None]):
+        if not self.alive:
+            return
+        self.update_flash(dt)
+        if self.slam_windup_t > 0:
+            self.slam_windup_t = max(0.0, self.slam_windup_t - dt)
+        if self.land_shock_t > 0:
+            self.land_shock_t = max(0.0, self.land_shock_t - dt)
+        self.was_on_ground = self.on_ground
+        self.on_ground = False
+        self.vel.y += GRAVITY * dt
+        self.pos.x += self.vel.x * dt
+        self.rect.x = int(self.pos.x)
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                if self.vel.x > 0:
+                    self.rect.right = p.rect.left
+                else:
+                    self.rect.left = p.rect.right
+                self.pos.x = self.rect.x
+                self.vel.x *= -1
+        self.pos.y += self.vel.y * dt
+        self.rect.y = int(self.pos.y)
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                if self.vel.y > 0:
+                    self.rect.bottom = p.rect.top
+                    self.on_ground = True
+                else:
+                    self.rect.top = p.rect.bottom
+                self.pos.y = self.rect.y
+                self.vel.y = 0
+        if self.slam_air and self.on_ground and not self.was_on_ground:
+            self.slam_air = False
+            on_slam(self.rect.centerx)
+            self.land_shock_t = 0.35
+        self.spawn_cd -= dt
+        if self.spawn_cd <= 0:
+            cap = SLIME_LOWHP_CAP if self.swarm() else SLIME_NORMAL_CAP
+            cur = sum(1 for e in enemies if isinstance(e, SlimeMinion) and e.alive)
+            if cur < cap:
+                count = 2 if self.swarm() else (1 if random.random() < 0.6 else 0)
+                if hard and random.random() < 0.35:
+                    count += 1
+                for _ in range(count):
+                    sx = clamp(self.rect.centerx + random.randint(-110, 110), 80, level_width - 120)
+                    sy = self.rect.bottom - SLIME_H
+                    enemies.append(SlimeMinion(sx, sy, hp=2 + (1 if hard else 0)))
+            base = (1.0 if self.swarm() else SLIME_SPAWN_CD) * (0.75 if hard else 1.0)
+            self.spawn_cd = base
+        self.shoot_cd -= dt
+        if self.shoot_cd <= 0:
+            dirx = -1 if player_pos.x < self.rect.centerx else 1
+            projectiles.append(Projectile("slime", self.rect.centerx + dirx * 56, self.rect.y + 34,
+                                          dirx * SLIME_BLOB_SPEED, -220.0, SLIME_PENALTY, owner="enemy", ttl=4.2))
+            base = (1.05 if self.swarm() else SLIME_SHOOT_CD) * (0.80 if hard else 1.0)
+            self.shoot_cd = base
+        self.slam_cd -= dt
+        if self.on_ground and self.slam_cd <= 0.75:
+            self.slam_indicator = max(self.slam_indicator, clamp(0.75 - self.slam_cd, 0.0, 0.75))
+        if self.slam_cd <= 0 and self.on_ground:
+            self.vel.y = -1180.0
+            self.slam_air = True
+            self.slam_indicator = 0.0
+            base = (2.4 if self.swarm() else SLIME_SLAM_CD) * (0.85 if hard else 1.0)
+            self.slam_cd = base
+
+    def draw(self, screen, cam_x: float):
+        if not self.alive:
+            return
+        r = self.rect.move(-int(cam_x), 0)
+        flash = self.flash_t > 0 and int(self.flash_t * 60) % 2 == 0
+        base_col = COL_SLIME_RED if self.is_red() else COL_SLIME
+        col = (235, 235, 245) if flash else base_col
+        t = pygame.time.get_ticks() * 0.001
+        wobble = math.sin(t * 4.5 + self.rect.centerx * 0.01)
+        sx = 1.0
+        sy = 1.0
+        if self.slam_windup_t > 0:
+            p = max(0.0, min(1.0, self.slam_windup_t / 0.55))
+            sx = 1.0 + 0.16 * (1.0 - p)
+            sy = 1.0 - 0.14 * (1.0 - p)
+        elif self.land_shock_t > 0:
+            p = max(0.0, min(1.0, self.land_shock_t / 0.35))
+            sx = 1.0 - 0.12 * (1.0 - p)
+            sy = 1.0 + 0.12 * (1.0 - p)
+        body = pygame.Rect(r.x, r.y + 8 + int(wobble * 2), r.w, r.h - 8)
+        if sx != 1.0 or sy != 1.0:
+            nw = int(body.w * sx)
+            nh = int(body.h * sy)
+            body = pygame.Rect(body.centerx - nw // 2, body.centery - nh // 2, nw, nh)
+        pygame.draw.ellipse(screen, (0, 0, 0), pygame.Rect(body.centerx - 46, body.bottom - 6, 92, 16))
+        pygame.draw.ellipse(screen, col, body)
+        pygame.draw.ellipse(screen, COL_OUTLINE, body, 3)
+        inner = body.inflate(-44, -46)
+        inner.y += 14
+        pygame.draw.ellipse(screen, (255, 160, 160) if self.is_red() else COL_SLIME_ACCENT, inner)
+        gloss = pygame.Rect(body.x + 18, body.y + 12, body.w // 3, body.h // 3)
+        pygame.draw.ellipse(screen, (255, 255, 255, 38), gloss)
+        if self.on_ground and (self.slam_cd < 0.75 or self.slam_indicator > 0):
+            intensity = clamp((0.75 - self.slam_cd) / 0.75, 0.0, 1.0)
+            a = int(40 + 170 * intensity)
+            ring = pygame.Surface((280, 90), pygame.SRCALPHA)
+            pygame.draw.ellipse(ring, (255, 110, 90, a), pygame.Rect(12, 28, 256, 42), 6)
+            pygame.draw.ellipse(ring, (10, 10, 14, a), pygame.Rect(12, 28, 256, 42), 2)
+            screen.blit(ring, (r.centerx - ring.get_width() // 2, GROUND_Y - ring.get_height() // 2))
+        eye_y = body.y + 50
+        pygame.draw.circle(screen, (24, 25, 34), (body.centerx - 28, eye_y), 7)
+        pygame.draw.circle(screen, (24, 25, 34), (body.centerx + 28, eye_y), 7)
+        pygame.draw.arc(screen, (24, 25, 34), pygame.Rect(body.centerx - 20, eye_y + 6, 40, 18), 0.15, 3.0, 2)
+        for off, radius in ((-42, 11), (46, 8), (8, 7)):
+            bx = body.centerx + off + int(math.sin(t * 2.4 + off) * 3)
+            by = body.y + 22 + int(math.cos(t * 2.0 + off) * 4)
+            bubble = pygame.Surface((radius * 2 + 8, radius * 2 + 8), pygame.SRCALPHA)
+            pygame.draw.circle(bubble, (255, 255, 255, 36), (bubble.get_width() // 2, bubble.get_height() // 2), radius + 2)
+            pygame.draw.circle(bubble, (255, 180, 180, 95) if self.is_red() else (165, 255, 205, 95), (bubble.get_width() // 2, bubble.get_height() // 2), radius)
+            screen.blit(bubble, (bx - bubble.get_width() // 2, by - bubble.get_height() // 2))
+        crown_base = pygame.Rect(body.centerx - 34, body.y - 24, 68, 24)
+        pygame.draw.rect(screen, COL_CROWN, crown_base, border_radius=6)
+        pygame.draw.rect(screen, COL_OUTLINE, crown_base, 2, border_radius=6)
+        spikes = [
+            (crown_base.left + 6, crown_base.top + 3),
+            (crown_base.left + 17, crown_base.top - 12),
+            (crown_base.left + 28, crown_base.top + 3),
+            (crown_base.left + 39, crown_base.top - 15),
+            (crown_base.left + 50, crown_base.top + 3),
+            (crown_base.left + 61, crown_base.top - 12),
+            (crown_base.right - 6, crown_base.top + 3),
+        ]
+        pygame.draw.polygon(screen, COL_CROWN, spikes)
+        pygame.draw.polygon(screen, COL_OUTLINE, spikes, 2)
+        pygame.draw.circle(screen, (255, 90, 110) if self.is_red() else (120, 230, 255), (crown_base.centerx, crown_base.top + 7), 5)
+        pygame.draw.circle(screen, COL_OUTLINE, (crown_base.centerx, crown_base.top + 7), 5, 1)
+
+
+class GolemBoss(EnemyBase):
+    def __init__(self, x: float, y: float, hp: int):
+        super().__init__()
+        self.pos = pygame.Vector2(x, y)
+        self.vel = pygame.Vector2(0.0, 0.0)
+        self.rect = pygame.Rect(int(x), int(y), GOLEM_BOSS_W, GOLEM_BOSS_H)
+        self.hp = hp
+        self.max_hp = hp
+        self.slam_cd = 1.3
+        self.is_boss = True
+        self.name = "DUNGEON GOLEM"
+        self.facing = 1
+        self.attack_anim_t = 0.0
+
+    def touch_damage(self) -> float:
+        return BOSS_TOUCH_PENALTY
+
+    def low(self) -> bool:
+        return self.hp <= int(self.max_hp * 0.35)
+
+    def update(self, dt: float, platforms: List[Platform], player_pos: pygame.Vector2,
+               player_vel: pygame.Vector2, telegraphs: List[PillarTelegraph], walls: List[GolemWall], level_width: int, hard: bool):
+        if not self.alive:
+            return
+        self.update_flash(dt)
+        if self.attack_anim_t > 0:
+            self.attack_anim_t = max(0.0, self.attack_anim_t - dt)
+        self.facing = -1 if player_pos.x < self.rect.centerx else 1
+        self.vel.x = self.facing * GOLEM_WALK_SPEED
+        self.vel.y += GRAVITY * dt
+        self.pos.x += self.vel.x * dt
+        self.pos.x = clamp(self.pos.x, 40, level_width - 40 - self.rect.w)
+        self.rect.x = int(self.pos.x)
+        self.pos.y += self.vel.y * dt
+        self.rect.y = int(self.pos.y)
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                if self.vel.y > 0:
+                    self.rect.bottom = p.rect.top
+                else:
+                    self.rect.top = p.rect.bottom
+                self.pos.y = self.rect.y
+                self.vel.y = 0
+        self.slam_cd -= dt
+        if self.slam_cd <= 0:
+            predicted = player_pos.x + player_vel.x * GOLEM_PILLAR_LEAD_TIME
+            target = clamp(predicted, 90, level_width - 120)
+            offsets = [0, random.randint(-110, -70), random.randint(70, 110)]
+            if hard:
+                offsets += [random.randint(-180, -140), random.randint(140, 180)]
+            enraged = self.hp <= int(self.max_hp * 0.50)
+            if enraged:
+                offsets += [random.randint(-240, -190), random.randint(190, 240), random.randint(-160, -120), random.randint(120, 160)]
+            for off in offsets:
+                telegraphs.append(PillarTelegraph(clamp(target + off, 90, level_width - 120), delay=GOLEM_TELEGRAPH_TIME, max_h=180 if enraged else 160))
+            self.attack_anim_t = max(self.attack_anim_t, 0.80 if not hard else 0.70)
+            base = GOLEM_SLAM_CD * (1.10 if hard else 1.45)
+            if self.low() and not enraged:
+                base *= 0.90
+            if enraged:
+                base *= 1.35
+                base += 0.40
+            self.slam_cd = base
+
+    def draw(self, screen, cam_x: float, t: float):
+        if not self.alive:
+            return
+        r = self.rect.move(-int(cam_x), 0)
+        flash = self.flash_t > 0 and int(self.flash_t * 60) % 2 == 0
+        col = (235, 235, 245) if flash else COL_GOLEM
+        vr = r.inflate(120, 90)
+        vr.y -= 38
+        aura_alpha = 70 if not self.low() else 130
+        aura_r = 92 if not self.low() else 138
+        aura = pygame.Surface((aura_r * 2, aura_r * 2), pygame.SRCALPHA)
+        pygame.draw.circle(aura, (180, 210, 255, aura_alpha), (aura_r, aura_r), aura_r)
+        screen.blit(aura, (r.centerx - aura_r, r.centery - aura_r))
+        pygame.draw.ellipse(screen, (0, 0, 0), pygame.Rect(vr.centerx - 64, vr.bottom - 10, 128, 18))
+        head = pygame.Rect(vr.centerx - 34, vr.y + 14, 68, 48)
+        torso = pygame.Rect(vr.centerx - 62, vr.y + 58, 124, 92)
+        arm_w, arm_h = 34, 76
+        swing = math.sin(t * 2.6 + (0.9 if self.facing > 0 else 0.1)) * 9
+        arm1 = pygame.Rect(torso.left - arm_w + 10, torso.y + 10 + int(swing), arm_w, arm_h)
+        arm2 = pygame.Rect(torso.right - 10, torso.y + 10 - int(swing), arm_w, arm_h)
+        leg1 = pygame.Rect(vr.centerx - 56, vr.bottom - 68, 38, 68)
+        leg2 = pygame.Rect(vr.centerx + 18, vr.bottom - 68, 38, 68)
+        for part in (head, torso, arm1, arm2, leg1, leg2):
+            pygame.draw.rect(screen, col, part, border_radius=16)
+            pygame.draw.rect(screen, COL_OUTLINE, part, 2, border_radius=16)
+        shoulder1 = pygame.Rect(torso.left + 2, torso.y + 4, 28, 18)
+        shoulder2 = pygame.Rect(torso.right - 30, torso.y + 4, 28, 18)
+        for sh in (shoulder1, shoulder2):
+            pygame.draw.rect(screen, (150, 155, 172), sh, border_radius=8)
+            pygame.draw.rect(screen, COL_OUTLINE, sh, 1, border_radius=8)
+        core = pygame.Rect(torso.centerx - 20, torso.centery - 16, 40, 40)
+        pulse = 0.5 + 0.5 * math.sin(t * (10.0 if self.attack_anim_t > 0 else 6.0))
+        glow_r = 62 + int(18 * pulse)
+        g = pygame.Surface((glow_r * 2, glow_r * 2), pygame.SRCALPHA)
+        a = int((90 if self.attack_anim_t > 0 else 55) + 115 * pulse)
+        pygame.draw.circle(g, (165, 200, 255, a), (glow_r, glow_r), glow_r)
+        screen.blit(g, (core.centerx - glow_r, core.centery - glow_r))
+        pygame.draw.rect(screen, COL_GOLEM_ACCENT, core, border_radius=14)
+        pygame.draw.rect(screen, COL_OUTLINE, core, 2, border_radius=14)
+        pygame.draw.circle(screen, (235, 245, 255), (core.centerx, core.centery), 5)
+        for x1, y1, x2, y2 in (
+            (torso.left + 12, torso.bottom - 10, torso.centerx - 8, torso.centery + 4),
+            (torso.right - 14, torso.bottom - 18, torso.centerx + 10, torso.centery - 2),
+            (head.left + 12, head.bottom - 6, head.centerx - 6, head.centery + 3),
+            (head.right - 12, head.bottom - 8, head.centerx + 8, head.centery + 5),
+        ):
+            pygame.draw.line(screen, (150, 160, 180), (x1, y1), (x2, y2), 2)
+            pygame.draw.line(screen, COL_OUTLINE, (x1, y1), (x2, y2), 1)
+        eye_glow = 3 if self.low() else 2
+        eye_col = (255, 160, 110) if self.low() else (230, 240, 255)
+        pygame.draw.rect(screen, (20, 20, 26), pygame.Rect(head.centerx - 20, head.centery - 6, 11, 10), border_radius=5)
+        pygame.draw.rect(screen, (20, 20, 26), pygame.Rect(head.centerx + 9, head.centery - 6, 11, 10), border_radius=5)
+        pygame.draw.circle(screen, eye_col, (head.centerx - 15, head.centery - 1), eye_glow)
+        pygame.draw.circle(screen, eye_col, (head.centerx + 15, head.centery - 1), eye_glow)
+        fist1 = pygame.Rect(arm1.x - 4, arm1.bottom - 14, 24, 20)
+        fist2 = pygame.Rect(arm2.right - 20, arm2.bottom - 14, 24, 20)
+        for fist in (fist1, fist2):
+            pygame.draw.rect(screen, col, fist, border_radius=8)
+            pygame.draw.rect(screen, COL_OUTLINE, fist, 2, border_radius=8)
+
+
+class DragonBoss(EnemyBase):
+    def __init__(self, x: float, y: float, hp: int):
+        super().__init__()
+        self.pos = pygame.Vector2(x, y)
+        self.rect = pygame.Rect(int(x), int(y), DRAGON_W, DRAGON_H)
+        self.hp = hp
+        self.max_hp = hp
+        self.is_boss = True
+        self.name = "ANCIENT DRAGON"
+        self.facing = -1
+        self.fireball_cd = 1.0
+        self.breath_cd = 2.8
+        self.swoop_cd = 4.1
+        self.melee_cd = 1.0
+        self.breath_t = 0.0
+        self.swooping = False
+        self.swoop_t = 0.0
+        self.melee_windup = 0.0
+        self.swipe_active = 0.0
+
+    def touch_damage(self) -> float:
+        return BOSS_TOUCH_PENALTY + 7.0
+
+    def phase2(self) -> bool:
+        return self.hp <= int(self.max_hp * DRAGON_PHASE2_RATIO)
+
+    def update(self, dt: float, player_pos: pygame.Vector2, player_rect: pygame.Rect,
+               projectiles: List[Projectile], fire_patches: List[FirePatch], hard: bool,
+               level_width: int, shake_cb: Callable[[float], None], message_cb: Callable[[str, float], None]):
+        if not self.alive:
+            return
+        self.update_flash(dt)
+        self.facing = -1 if player_pos.x < self.rect.centerx else 1
+        base_y = 132 if not self.phase2() else 118
+        self.pos.y = lerp(self.pos.y, base_y, 0.05)
+        sway = math.sin(pygame.time.get_ticks() * 0.0011) * (1.1 if self.phase2() else 0.8)
+        self.pos.x += sway * (70 * dt)
+        self.pos.x = clamp(self.pos.x, 120, level_width - 120 - self.rect.w)
+        self.rect.topleft = (int(self.pos.x), int(self.pos.y))
+        self.melee_cd -= dt
+        head_x = self.rect.centerx + (80 if self.facing > 0 else -80)
+        head_y = self.rect.y + 55
+        dist = abs(player_rect.centerx - head_x)
+        close = dist < 180 and abs(player_rect.centery - head_y) < 120
+        if self.melee_cd <= 0 and close and self.melee_windup <= 0 and self.swipe_active <= 0 and not self.swooping and self.breath_t <= 0:
+            self.melee_windup = 0.55 if not hard else 0.45
+            self.melee_cd = DRAGON_MELEE_CD * (0.85 if self.phase2() else 1.0)
+            message_cb("DRAGON SWIPE!", 0.45)
+        if self.melee_windup > 0:
+            self.melee_windup = max(0.0, self.melee_windup - dt)
+            if self.melee_windup == 0:
+                self.swipe_active = 0.18
+                shake_cb(0.18)
+        if self.swipe_active > 0:
+            self.swipe_active = max(0.0, self.swipe_active - dt)
+        self.swoop_cd -= dt
+        if self.swoop_cd <= 0 and not self.swooping and self.melee_windup <= 0 and self.swipe_active <= 0:
+            self.swooping = True
+            self.swoop_t = 1.05 if not hard else 1.2
+            self.swoop_cd = DRAGON_SWOOP_CD * (0.80 if hard else 1.0) * (0.78 if self.phase2() else 1.0)
+            shake_cb(0.18)
+            message_cb("DRAGON DIVE!", 0.45)
+        if self.swooping:
+            self.swoop_t -= dt
+            target_x = clamp(player_pos.x - self.rect.w / 2, 80, level_width - 80 - self.rect.w)
+            self.pos.x = lerp(self.pos.x, target_x, 0.12)
+            self.pos.y = lerp(self.pos.y, 265 if not self.phase2() else 285, 0.14)
+            self.rect.topleft = (int(self.pos.x), int(self.pos.y))
+            if self.swoop_t <= 0:
+                self.swooping = False
+        self.fireball_cd -= dt
+        if self.fireball_cd <= 0 and self.breath_t <= 0 and self.melee_windup <= 0:
+            shots = 2 + (1 if self.phase2() else 0) + (1 if hard and random.random() < 0.5 else 0)
+            for i in range(shots):
+                vx = self.facing * DRAGON_FIREBALL_SPEED * (1.15 if hard else 1.0) * (1.10 if self.phase2() else 1.0)
+                vy = -130 - i * 28
+                projectiles.append(Projectile("fire", head_x, head_y, vx, vy, 0.0, owner="enemy", ttl=4.4))
+            self.fireball_cd = DRAGON_FIREBALL_CD * (0.78 if hard else 1.0) * (0.72 if self.phase2() else 1.0)
+        self.breath_cd -= dt
+        if self.breath_cd <= 0 and not self.swooping and self.melee_windup <= 0:
+            self.breath_t = DRAGON_BREATH_DURATION * (1.15 if hard else 1.0) * (1.12 if self.phase2() else 1.0)
+            self.breath_cd = DRAGON_BREATH_CD * (0.80 if hard else 1.0) * (0.78 if self.phase2() else 1.0)
+            shake_cb(0.22)
+            message_cb("FIRE BREATH!", 0.6)
+        if self.breath_t > 0:
+            self.breath_t = max(0.0, self.breath_t - dt)
+            if int(self.breath_t * 20) % 2 == 0:
+                start_x = head_x
+                lead = (player_rect.centerx - start_x) * 0.2
+                for _ in range(2 if (hard or self.phase2()) else 1):
+                    jitter = random.randint(-50, 50)
+                    px = clamp(start_x + self.facing * random.randint(60, 220) + jitter + lead, 80, level_width - 80)
+                    fire_patches.append(FirePatch(px, GROUND_Y, w=random.randint(56, 92), ttl=2.0 + (0.7 if hard else 0.0)))
+
+    def swipe_hitbox(self) -> pygame.Rect:
+        head_x = self.rect.centerx + (90 if self.facing > 0 else -90)
+        head_y = self.rect.y + 62
+        return pygame.Rect(int(head_x - 90), int(head_y - 50), 180, 110)
+
+    def swoop_hitbox(self) -> pygame.Rect:
+        return self.rect.inflate(-30, -50)
+
+    def draw(self, screen, cam_x: float, t: float):
+        if not self.alive:
+            return
+        r = self.rect.move(-int(cam_x), 0)
+        vr = r.inflate(110, 72)
+        vr.y -= 20
+        flash = self.flash_t > 0 and int(self.flash_t * 60) % 2 == 0
+        if self.phase2():
+            aura_r = 170
+            aura = pygame.Surface((aura_r * 2, aura_r * 2), pygame.SRCALPHA)
+            pygame.draw.circle(aura, (255, 130, 80, 105), (aura_r, aura_r), aura_r)
+            screen.blit(aura, (r.centerx - aura_r, r.centery - aura_r))
+        col = (235, 235, 245) if flash else COL_DRAGON
+        wing_col = (120, 80, 62) if not flash else (235, 235, 245)
+        body = pygame.Rect(vr.x + 58, vr.y + 76, vr.w - 118, vr.h - 98)
+        pygame.draw.ellipse(screen, col, body)
+        pygame.draw.ellipse(screen, COL_OUTLINE, body, 3)
+        belly = body.inflate(-46, -42)
+        belly.y += 18
+        pygame.draw.ellipse(screen, COL_DRAGON_ACCENT, belly)
+        back_spines = []
+        for i in range(6):
+            px = body.left + 30 + i * int((body.w - 60) / 5)
+            py = body.y + 8 + int(6 * math.sin(t * 3.0 + i))
+            back_spines.append([(px - 10, py + 18), (px, py - 9), (px + 10, py + 18)])
+        for tri in back_spines:
+            pygame.draw.polygon(screen, (90, 55, 45), tri)
+            pygame.draw.polygon(screen, COL_OUTLINE, tri, 2)
+        neck = pygame.Rect(vr.centerx + (46 if self.facing > 0 else -158), vr.y + 80, 132, 56)
+        pygame.draw.ellipse(screen, col, neck)
+        pygame.draw.ellipse(screen, COL_OUTLINE, neck, 2)
+        head = pygame.Rect(neck.x + (74 if self.facing > 0 else -22), vr.y + 50, 104, 74)
+        pygame.draw.ellipse(screen, col, head)
+        pygame.draw.ellipse(screen, COL_OUTLINE, head, 2)
+        if self.facing > 0:
+            horn1 = [(head.right - 12, head.y + 10), (head.right + 24, head.y + 2), (head.right - 2, head.y + 28)]
+            horn2 = [(head.right - 22, head.y + 19), (head.right + 12, head.y + 13), (head.right - 12, head.y + 36)]
+        else:
+            horn1 = [(head.left + 12, head.y + 10), (head.left - 24, head.y + 2), (head.left + 2, head.y + 28)]
+            horn2 = [(head.left + 22, head.y + 19), (head.left - 12, head.y + 13), (head.left + 12, head.y + 36)]
+        pygame.draw.polygon(screen, COL_DRAGON_ACCENT, horn1)
+        pygame.draw.polygon(screen, COL_DRAGON_ACCENT, horn2)
+        pygame.draw.polygon(screen, COL_OUTLINE, horn1, 2)
+        pygame.draw.polygon(screen, COL_OUTLINE, horn2, 2)
+        wing_y = vr.y + 58
+        flap = math.sin(t * 5.0) * 10
+        if self.facing > 0:
+            wing1 = [(body.left + 16, wing_y + 34), (body.left - 126, wing_y - 10 + flap), (body.left - 78, wing_y + 92)]
+            wing2 = [(body.right - 20, wing_y + 34), (body.right - 66, wing_y - 4 + flap), (body.right - 16, wing_y + 86)]
+        else:
+            wing1 = [(body.right - 16, wing_y + 34), (body.right + 126, wing_y - 10 + flap), (body.right + 78, wing_y + 92)]
+            wing2 = [(body.left + 20, wing_y + 34), (body.left + 66, wing_y - 4 + flap), (body.left + 16, wing_y + 86)]
+        for wing in (wing1, wing2):
+            pygame.draw.polygon(screen, wing_col, wing)
+            pygame.draw.polygon(screen, COL_OUTLINE, wing, 2)
+        tail = pygame.Rect(body.x - 118 if self.facing > 0 else body.right - 10, body.centery - 16, 138, 34)
+        pygame.draw.ellipse(screen, col, tail)
+        pygame.draw.ellipse(screen, COL_OUTLINE, tail, 2)
+        tail_tip = [(tail.right - 10, tail.centery - 8), (tail.right + 18, tail.centery), (tail.right - 10, tail.centery + 8)] if self.facing > 0 else [(tail.left + 10, tail.centery - 8), (tail.left - 18, tail.centery), (tail.left + 10, tail.centery + 8)]
+        pygame.draw.polygon(screen, COL_DRAGON_ACCENT, tail_tip)
+        pygame.draw.polygon(screen, COL_OUTLINE, tail_tip, 2)
+        eye_x = head.centerx + (14 if self.facing > 0 else -14)
+        pygame.draw.circle(screen, (255, 120, 80), (eye_x, head.centery - 2), 7)
+        pygame.draw.circle(screen, (255, 230, 200), (eye_x, head.centery - 2), 3)
+        pygame.draw.circle(screen, COL_OUTLINE, (eye_x, head.centery - 2), 5, 1)
+        mouth = pygame.Rect(head.centerx + (18 if self.facing > 0 else -56), head.centery + 14, 44, 15)
+        if self.phase2() or self.breath_t > 0:
+            smoke = pygame.Surface((130, 100), pygame.SRCALPHA)
+            for i in range(7):
+                a = int(40 + 30 * math.sin(t * 6 + i))
+                cx = 40 + i * 11
+                cy = 50 + int(10 * math.sin(t * 4 + i))
+                pygame.draw.circle(smoke, (60, 60, 70, a), (cx, cy), 14 + (i % 3) * 3)
+            screen.blit(smoke, (mouth.centerx - 54, mouth.centery - 48))
+        pygame.draw.rect(screen, (25, 25, 34), mouth, border_radius=6)
+        for i in range(6):
+            tx = mouth.x + 6 + i * 8
+            pygame.draw.line(screen, (235, 235, 245), (tx, mouth.y), (tx + 2, mouth.y + 6), 2)
+        if self.breath_t > 0:
+            flame_len = 36 + int(24 * math.sin(t * 14))
+            flame = [(mouth.right if self.facing > 0 else mouth.left, mouth.centery - 2),
+                     (mouth.right + flame_len if self.facing > 0 else mouth.left - flame_len, mouth.centery - 12),
+                     (mouth.right + flame_len + 18 if self.facing > 0 else mouth.left - flame_len - 18, mouth.centery),
+                     (mouth.right + flame_len if self.facing > 0 else mouth.left - flame_len, mouth.centery + 12)]
+            pygame.draw.polygon(screen, COL_FIRE, flame)
+            inner_flame = [(flame[0][0], flame[0][1]),
+                           (mouth.right + flame_len - 10 if self.facing > 0 else mouth.left - flame_len + 10, mouth.centery - 6),
+                           (mouth.right + flame_len if self.facing > 0 else mouth.left - flame_len, mouth.centery),
+                           (mouth.right + flame_len - 10 if self.facing > 0 else mouth.left - flame_len + 10, mouth.centery + 6)]
+            pygame.draw.polygon(screen, COL_FIRE2, inner_flame)
+            pygame.draw.polygon(screen, COL_OUTLINE, flame, 2)
+
+
+# ----------------------------
+# Player (Humanoid Knight) — improved further
+# ----------------------------
+class Player:
+    def __init__(self, x: float, y: float):
+        self.pos = pygame.Vector2(x, y)
+        self.vel = pygame.Vector2(0, 0)
+        self.rect = pygame.Rect(int(x), int(y), PLAYER_W, PLAYER_H)
+        self.prev_rect = self.rect.copy()
+
+        self.facing = 1
+        self.on_ground = False
+        self.max_jumps = BASE_MAX_JUMPS
+        self.jumps_used = 0
+
+        self.hunger = START_HUNGER
+        self.invuln = 0.0
+
+        self.slime_slow_t = 0.0
+        self.burn_t = 0.0
+        self.burn_tick_accum = 0.0
+        self.burn_resist = 1.0
+
+        self.attack_t = 0.0
+        self.attack_cd = 0.0
+        self.attack_serial = 0
+        self.attack_cd_mult = 1.0
+        self.range_mult = 1.0
+
+        self.dash_unlocked = False
+        self.dash_t = 0.0
+        self.dash_cd = 0.0
+        self.dash_cd_mult = 1.0
+
+        self.block_unlocked = False
+        self.block_t = 0.0
+        self.block_cd = 0.0
+        self.block_time_mult = 1.0
+
+        self.deflect_unlocked = False
+
+        self.food_mult = 1.0
+        self.damage_mult = 1.0
+        self.drain_mult = 1.0
+        self.damage_taken_mult = 1.0
+        self.run_mult = 1.0
+        self.jump_mult = 1.0
+        self.projectile_resist = 1.0
+        self.boss_damage_mult = 1.0
+        self.hunger_on_kill = 0.0
+        self.food_ttl_mult = 1.0
+        self.feast_chance = 0.0
+
+        self.kill_streak = 0
+        self.rush_t = 0.0
+        self.rush_stacks = 0
+
+        self.trail: List[int] = []
+
+    def snapshot(self) -> dict:
+        return {
+            "dash": self.dash_unlocked,
+            "block": self.block_unlocked,
+            "deflect": self.deflect_unlocked,
+            "food_mult": self.food_mult,
+            "damage_mult": self.damage_mult,
+            "drain_mult": self.drain_mult,
+            "damage_taken_mult": self.damage_taken_mult,
+            "run_mult": self.run_mult,
+            "jump_mult": self.jump_mult,
+            "projectile_resist": self.projectile_resist,
+            "boss_damage_mult": self.boss_damage_mult,
+            "hunger_on_kill": self.hunger_on_kill,
+            "food_ttl_mult": self.food_ttl_mult,
+            "feast_chance": self.feast_chance,
+            "attack_cd_mult": self.attack_cd_mult,
+            "range_mult": self.range_mult,
+            "dash_cd_mult": self.dash_cd_mult,
+            "block_time_mult": self.block_time_mult,
+            "max_jumps": self.max_jumps,
+            "burn_resist": self.burn_resist,
+            "hunger": self.hunger,
+            "kill_streak": self.kill_streak,
+            "rush_t": self.rush_t,
+            "rush_stacks": self.rush_stacks,
+        }
+
+    def apply_snapshot(self, data: dict):
+        self.dash_unlocked = bool(data.get("dash", self.dash_unlocked))
+        self.block_unlocked = bool(data.get("block", self.block_unlocked))
+        self.deflect_unlocked = bool(data.get("deflect", self.deflect_unlocked))
+        self.food_mult = float(data.get("food_mult", self.food_mult))
+        self.damage_mult = float(data.get("damage_mult", self.damage_mult))
+        self.drain_mult = float(data.get("drain_mult", self.drain_mult))
+        self.damage_taken_mult = float(data.get("damage_taken_mult", self.damage_taken_mult))
+        self.run_mult = float(data.get("run_mult", self.run_mult))
+        self.jump_mult = float(data.get("jump_mult", self.jump_mult))
+        self.projectile_resist = float(data.get("projectile_resist", self.projectile_resist))
+        self.boss_damage_mult = float(data.get("boss_damage_mult", self.boss_damage_mult))
+        self.hunger_on_kill = float(data.get("hunger_on_kill", self.hunger_on_kill))
+        self.food_ttl_mult = float(data.get("food_ttl_mult", self.food_ttl_mult))
+        self.feast_chance = float(data.get("feast_chance", self.feast_chance))
+        self.attack_cd_mult = float(data.get("attack_cd_mult", self.attack_cd_mult))
+        self.range_mult = float(data.get("range_mult", self.range_mult))
+        self.dash_cd_mult = float(data.get("dash_cd_mult", self.dash_cd_mult))
+        self.block_time_mult = float(data.get("block_time_mult", self.block_time_mult))
+        self.max_jumps = int(data.get("max_jumps", self.max_jumps))
+        self.burn_resist = float(data.get("burn_resist", self.burn_resist))
+        self.hunger = float(data.get("hunger", self.hunger))
+        self.kill_streak = int(data.get("kill_streak", self.kill_streak))
+        self.rush_t = float(data.get("rush_t", self.rush_t))
+        self.rush_stacks = int(data.get("rush_stacks", self.rush_stacks))
+
+    def reset_position(self, x: float, y: float):
+        self.pos.update(x, y)
+        self.vel.update(0, 0)
+        self.rect.topleft = (int(x), int(y))
+        self.prev_rect = self.rect.copy()
+        self.on_ground = False
+        self.jumps_used = 0
+        self.invuln = 0.0
+        self.slime_slow_t = 0.0
+        self.burn_t = 0.0
+        self.burn_tick_accum = 0.0
+        self.attack_t = 0.0
+        self.attack_cd = 0.0
+        self.dash_t = 0.0
+        self.dash_cd = 0.0
+        self.block_t = 0.0
+        self.block_cd = 0.0
+        self.trail.clear()
+
+    def streak_speed_mult(self) -> float:
+        return 1.0 + min(0.60, 0.03 * self.kill_streak)
+
+    def streak_jump_mult(self) -> float:
+        return 1.0 + min(0.25, 0.015 * self.kill_streak)
+
+    def streak_drain_mult(self) -> float:
+        return max(0.55, 1.0 - 0.02 * self.kill_streak)
+
+    def rush_mult(self) -> float:
+        return 1.0 + (0.07 * self.rush_stacks if self.rush_t > 0 else 0.0)
+
+    def reset_streak(self):
+        self.kill_streak = 0
+        self.rush_stacks = 0
+        self.rush_t = 0.0
+
+    def add_kill(self):
+        self.kill_streak = int(clamp(self.kill_streak + 1, 0, 25))
+        self.rush_t = 3.0
+        self.rush_stacks = int(clamp(self.rush_stacks + 1, 1, 3))
+        if self.hunger_on_kill > 0:
+            self.hunger = min(HUNGER_MAX, self.hunger + self.hunger_on_kill)
+
+    def apply_slime_slow(self):
+        self.slime_slow_t = max(self.slime_slow_t, SLOW_TIME)
+
+    def apply_burn(self, duration: float = DRAGON_BURN_DURATION):
+        self.burn_t = max(self.burn_t, duration)
+
+    def sword_color(self) -> Tuple[int, int, int]:
+        if self.damage_mult >= 3.0:
+            return COL_SWORD_RED
+        if self.damage_mult >= 2.0:
+            return COL_SWORD_BLUE
+        return COL_SWORD_NORMAL
+
+    def try_jump(self) -> bool:
+        if self.jumps_used >= self.max_jumps:
+            return False
+        self.vel.y = -(BASE_JUMP * self.jump_mult * self.streak_jump_mult())
+        self.jumps_used += 1
+        self.on_ground = False
+        return True
+
+    def start_attack(self) -> bool:
+        if self.attack_cd > 0 or self.attack_t > 0:
+            return False
+        self.attack_t = ATTACK_DURATION
+        self.attack_cd = ATTACK_COOLDOWN * self.attack_cd_mult
+        self.attack_serial += 1
+        return True
+
+    def attack_damage(self, vs_boss: bool) -> int:
+        # 0.25% extra damage per kill in streak
+        streak_bonus = 1.0 + (self.kill_streak * 0.0025)
+        mult = (
+            self.damage_mult
+            * streak_bonus
+            * (self.boss_damage_mult if vs_boss else 1.0)
+        )
+        return max(1, int(round(BASE_ATTACK_DAMAGE * mult)))
+
+    def attack_rect(self) -> Optional[pygame.Rect]:
+        if self.attack_t <= 0:
+            return None
+        w = int(ATTACK_RANGE_W * self.range_mult)
+        h = int(ATTACK_RANGE_H * self.range_mult)
+        if self.facing > 0:
+            return pygame.Rect(self.rect.right, self.rect.centery - h // 2, w, h)
+        return pygame.Rect(self.rect.left - w, self.rect.centery - h // 2, w, h)
+
+    def start_dash(self) -> bool:
+        if not self.dash_unlocked or self.dash_cd > 0 or self.dash_t > 0:
+            return False
+        self.dash_t = DASH_TIME
+        self.dash_cd = DASH_COOLDOWN * self.dash_cd_mult
+        return True
+
+    def start_block(self) -> bool:
+        if not self.block_unlocked or self.block_cd > 0 or self.block_t > 0:
+            return False
+        self.block_t = BLOCK_TIME * self.block_time_mult
+        self.block_cd = BLOCK_COOLDOWN
+        return True
+
+    def is_blocking(self) -> bool:
+        return self.block_t > 0
+
+    def update(self, dt: float, keys, platforms: List[Platform]):
+        self.prev_rect = self.rect.copy()
+
+        if self.attack_t > 0:
+            self.attack_t = max(0.0, self.attack_t - dt)
+        if self.attack_cd > 0:
+            self.attack_cd = max(0.0, self.attack_cd - dt)
+        if self.invuln > 0:
+            self.invuln = max(0.0, self.invuln - dt)
+        if self.slime_slow_t > 0:
+            self.slime_slow_t = max(0.0, self.slime_slow_t - dt)
+        if self.dash_t > 0:
+            self.dash_t = max(0.0, self.dash_t - dt)
+        if self.dash_cd > 0:
+            self.dash_cd = max(0.0, self.dash_cd - dt)
+        if self.block_t > 0:
+            self.block_t = max(0.0, self.block_t - dt)
+        if self.block_cd > 0:
+            self.block_cd = max(0.0, self.block_cd - dt)
+        if self.rush_t > 0:
+            self.rush_t = max(0.0, self.rush_t - dt)
+            if self.rush_t == 0:
+                self.rush_stacks = 0
+
+        if self.burn_t > 0:
+            self.burn_t = max(0.0, self.burn_t - dt)
+            self.burn_tick_accum += dt
+            while self.burn_tick_accum >= DRAGON_BURN_TICKS_INTERVAL and self.burn_t > 0:
+                self.burn_tick_accum -= DRAGON_BURN_TICKS_INTERVAL
+                self.hunger = max(0.0, self.hunger - (DRAGON_BURN_TICKS_AMOUNT * self.burn_resist))
+
+        move = 0
+        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+            move -= 1
+        if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+            move += 1
+        if move != 0:
+            self.facing = 1 if move > 0 else -1
+
+        slow_mult = 1.0
+        if self.slime_slow_t > 0:
+            slow_mult = min(slow_mult, SLOW_MULT)
+        if self.burn_t > 0:
+            slow_mult = min(slow_mult, DRAGON_BURN_SLOW_MULT)
+
+        panic = 1.10 if self.hunger <= 20.0 else 1.0
+        run_speed = BASE_RUN_SPEED * self.run_mult * self.streak_speed_mult() * self.rush_mult() * panic
+
+        if self.dash_t > 0:
+            self.vel.x = self.facing * DASH_SPEED
+        else:
+            self.vel.x = move * run_speed * slow_mult
+
+        self.vel.y += GRAVITY * dt
+
+        self.pos.x += self.vel.x * dt
+        self.rect.x = int(self.pos.x)
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                if self.vel.x > 0:
+                    self.rect.right = p.rect.left
+                elif self.vel.x < 0:
+                    self.rect.left = p.rect.right
+                self.pos.x = self.rect.x
+
+        self.pos.y += self.vel.y * dt
+        self.rect.y = int(self.pos.y)
+        was_ground = self.on_ground
+        self.on_ground = False
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                if self.vel.y > 0:
+                    self.rect.bottom = p.rect.top
+                    self.on_ground = True
+                else:
+                    self.rect.top = p.rect.bottom
+                self.pos.y = self.rect.y
+                self.vel.y = 0
+
+        if self.on_ground and not was_ground:
+            self.jumps_used = 0
+
+        self.trail.append(int(self.rect.centerx))
+        if len(self.trail) > 60:
+            self.trail.pop(0)
+
+    def hurt(self, amount: float, knock_dir: int, slow=False, projectile=False):
+        if self.is_blocking() or self.invuln > 0:
+            return
+        if projectile:
+            amount *= self.projectile_resist
+        amount *= self.damage_taken_mult
+
+        self.hunger = max(0.0, self.hunger - amount)
+        self.invuln = INVULN_TIME
+        self.vel.x = 260.0 * knock_dir
+        self.vel.y = -360.0
+        if slow:
+            self.apply_slime_slow()
+        self.reset_streak()
+
+    def draw(self, screen, cam_x: float, t: float):
+        r = self.rect.move(-int(cam_x), 0)
+        if self.invuln > 0 and int(self.invuln * 12) % 2 == 0:
+            return
+
+        # walk cycle
+        speed_factor = clamp(abs(self.vel.x) / 360.0, 0.0, 1.0)
+        step = math.sin(t * (10.0 + 6.0 * speed_factor)) * (4.0 * speed_factor)
+        bob = int(math.sin(t * (8.0 + 6.0 * speed_factor)) * (1.4 if speed_factor > 0.2 else 0.6))
+        rr = pygame.Rect(r.x, r.y + bob, r.w, r.h)
+
+        # shadow
+        shadow = pygame.Rect(rr.centerx - 16, rr.bottom - 6, 32, 10)
+        pygame.draw.ellipse(screen, (0, 0, 0), shadow)
+
+        # legs
+        leg_w, leg_h = 10, 20
+        leg1 = pygame.Rect(rr.x + 7, rr.bottom - leg_h, leg_w, leg_h)
+        leg2 = pygame.Rect(rr.right - 17, rr.bottom - leg_h, leg_w, leg_h)
+        leg1.y += int(step)
+        leg2.y -= int(step)
+
+        # boots
+        boot1 = pygame.Rect(leg1.x - 2, leg1.bottom - 6, leg_w + 4, 7)
+        boot2 = pygame.Rect(leg2.x - 2, leg2.bottom - 6, leg_w + 4, 7)
+
+        # torso
+        torso = pygame.Rect(rr.x + 4, rr.y + 18, rr.w - 8, rr.h - 34)
+
+        # arms
+        arm_w, arm_h = 9, 18
+        arm_l = pygame.Rect(torso.x - 3, torso.y + 14, arm_w, arm_h)
+        arm_r = pygame.Rect(torso.right - 6, torso.y + 14, arm_w, arm_h)
+
+        # belt
+        belt = pygame.Rect(torso.x + 4, torso.y + torso.h - 16, torso.w - 8, 8)
+
+        # helmet
+        helm = pygame.Rect(rr.centerx - 13, rr.y + 2, 26, 20)
+        visor = pygame.Rect(helm.x + 5, helm.y + 9, helm.w - 10, 7)
+
+        # draw legs + boots
+        pygame.draw.rect(screen, COL_ARMOR_DARK, leg1, border_radius=4)
+        pygame.draw.rect(screen, COL_ARMOR_DARK, leg2, border_radius=4)
+        pygame.draw.rect(screen, COL_OUTLINE, leg1, 1, border_radius=4)
+        pygame.draw.rect(screen, COL_OUTLINE, leg2, 1, border_radius=4)
+
+        pygame.draw.rect(screen, (35, 35, 46), boot1, border_radius=4)
+        pygame.draw.rect(screen, (35, 35, 46), boot2, border_radius=4)
+        pygame.draw.rect(screen, COL_OUTLINE, boot1, 1, border_radius=4)
+        pygame.draw.rect(screen, COL_OUTLINE, boot2, 1, border_radius=4)
+
+        # torso armor
+        pygame.draw.rect(screen, COL_ARMOR, torso, border_radius=12)
+        pygame.draw.rect(screen, COL_OUTLINE, torso, 2, border_radius=12)
+
+        # chest shine
+        shine = pygame.Rect(torso.x + 6, torso.y + 6, torso.w - 12, 10)
+        pygame.draw.rect(screen, COL_ARMOR_SHINE, shine, border_radius=8)
+
+        # cloth underplate
+        cloth = pygame.Rect(torso.x + 7, torso.y + 22, torso.w - 14, 12)
+        pygame.draw.rect(screen, COL_CLOTH2, cloth, border_radius=8)
+
+        # belt
+        pygame.draw.rect(screen, COL_LEATHER, belt, border_radius=6)
+        pygame.draw.rect(screen, COL_OUTLINE, belt, 2, border_radius=6)
+        buckle = pygame.Rect(belt.centerx - 6, belt.y + 1, 12, 6)
+        pygame.draw.rect(screen, (185, 170, 120), buckle, border_radius=3)
+        pygame.draw.rect(screen, COL_OUTLINE, buckle, 1, border_radius=3)
+
+        # arms (animated) + sword bound to right arm
+        # left arm (idle swing)
+        arm_swing = math.sin(t * (9.0 + 5.0 * speed_factor)) * (3.0 * speed_factor)
+        arm_l2 = arm_l.move(0, int(-arm_swing))
+        pygame.draw.rect(screen, COL_ARMOR_DARK, arm_l2, border_radius=4)
+        pygame.draw.rect(screen, COL_OUTLINE, arm_l2, 1, border_radius=4)
+
+        # right arm: sword arm
+        if self.attack_t > 0:
+            prog = 1.0 - (self.attack_t / max(0.0001, ATTACK_DURATION))
+            # wind-up -> strike -> recover
+            if prog < 0.25:
+                swing = lerp(-1.2, -0.4, prog / 0.25)
+            elif prog < 0.65:
+                swing = lerp(-0.4, 0.9, (prog - 0.25) / 0.40)
+            else:
+                swing = lerp(0.9, 0.2, (prog - 0.65) / 0.35)
+
+            swing *= self.facing
+
+            shoulder = pygame.Vector2(torso.right - 2 if self.facing > 0 else torso.left + 2, torso.y + 16)
+            hand = shoulder + pygame.Vector2(math.cos(swing) * 18 * self.facing, math.sin(swing) * 18 + 10)
+
+            # arm
+            pygame.draw.line(screen, COL_ARMOR_DARK, shoulder, hand, 7)
+            pygame.draw.line(screen, COL_OUTLINE, shoulder, hand, 2)
+
+            # sword
+            s_col = self.sword_color()
+            blade_len = 66
+            tip = hand + pygame.Vector2(math.cos(swing) * blade_len * self.facing, math.sin(swing) * blade_len - 18)
+            pygame.draw.line(screen, s_col, hand, tip, 5)
+            pygame.draw.line(screen, COL_OUTLINE, hand, tip, 2)
+
+            # hilt / pommel
+            pygame.draw.circle(screen, (210, 190, 140), (int(hand.x), int(hand.y)), 4)
+            pygame.draw.circle(screen, COL_OUTLINE, (int(hand.x), int(hand.y)), 4, 1)
+        else:
+            arm_r2 = arm_r.move(0, int(arm_swing))
+            pygame.draw.rect(screen, COL_ARMOR_DARK, arm_r2, border_radius=4)
+            pygame.draw.rect(screen, COL_OUTLINE, arm_r2, 1, border_radius=4)
+
+            # sheathed sword
+            sheath = pygame.Rect(rr.centerx - 4, rr.y + 24, 8, 28)
+            pygame.draw.rect(screen, (50, 50, 65), sheath, border_radius=4)
+            pygame.draw.rect(screen, COL_OUTLINE, sheath, 2, border_radius=4)
+            strap = pygame.Rect(sheath.x - 6, sheath.y + 6, 20, 6)
+            pygame.draw.rect(screen, COL_LEATHER, strap, border_radius=3)
+            pygame.draw.rect(screen, COL_OUTLINE, strap, 1, border_radius=3)
+
+        # shield bubble
+        if self.is_blocking():
+            shield_r = rr.inflate(34, 34)
+            shield = pygame.Surface((shield_r.w, shield_r.h), pygame.SRCALPHA)
+            pygame.draw.ellipse(shield, (*COL_SHIELD, 70), pygame.Rect(0, 0, shield_r.w, shield_r.h))
+            pygame.draw.ellipse(shield, (*COL_SHIELD, 160), pygame.Rect(4, 4, shield_r.w - 8, shield_r.h - 8), width=3)
+            screen.blit(shield, (shield_r.x, shield_r.y))
+
+        # burn flames
+        if self.burn_t > 0:
+            flame = pygame.Surface((60, 70), pygame.SRCALPHA)
+            a = int(120 + 80 * math.sin(t * 12))
+            pygame.draw.circle(flame, (*COL_FIRE, a), (30, 40), 18)
+            pygame.draw.circle(flame, (*COL_FIRE2, a // 2), (34, 32), 10)
+            screen.blit(flame, (rr.centerx - 30, rr.y - 10))
+
+
+# ----------------------------
+# Level
+# ----------------------------
+class Level:
+    def __init__(self, dungeon_idx: int, hard: bool):
+        self.dungeon = dungeon_idx
+        self.hard = hard
+        self.is_boss = (dungeon_idx % MILESTONE_EVERY == 0)
+        self.width = BOSS_ARENA_WIDTH if self.is_boss else (LEVEL_BASE_WIDTH + (dungeon_idx - 1) * LEVEL_WIDTH_STEP)
+
+        self.platforms: List[Platform] = []
+        self.enemies: List[EnemyBase] = []
+        self.projectiles: List[Projectile] = []
+        self.hazards: List[PillarHazard] = []
+        self.telegraphs: List[PillarTelegraph] = []
+        self.fire_patches: List[FirePatch] = []
+        self.food: List[Food] = []
+        self.sparks: List[Spark] = []
+        self.shockwaves: List[Shockwave] = []
+        self.walls: List[GolemWall] = []
+        self.death_fx: List[DeathEffect] = []
+
+        self.door = BigDoor(self.width - 180, GROUND_Y - 168)
+        self.message = ""
+        self.message_t = 0.0
+
+        self.torches = [350, 900, 1450, 2000, 2550, 3100]
+        self._build()
+
+    def _mob_hp(self) -> int:
+        hp = 1 + (self.dungeon - 1) // 4
+        hp = int(clamp(hp, 1, 4))
+        if self.hard:
+            hp = int(clamp(hp + 1, 1, 5))
+        return hp
+
+    def _build_obstacle_course(self):
+        self.platforms.append(Platform(pygame.Rect(0, GROUND_Y, self.width, HEIGHT - GROUND_Y)))
+        x = 220
+        y = 400
+        for _ in range(7):
+            w = random.randint(190, 310)
+            y = int(clamp(y + random.randint(-60, 40), 260, 420))
+            self.platforms.append(Platform(pygame.Rect(x, y, w, 18)))
+            x += w + random.randint(150, 230)
+
+        self.platforms.append(Platform(pygame.Rect(self.width - 610, 360, 170, 18)))
+        self.platforms.append(Platform(pygame.Rect(self.width - 360, 300, 170, 18)))
+
+    def _build_boss_arena(self):
+        floor = Platform(pygame.Rect(0, GROUND_Y, self.width, HEIGHT - GROUND_Y))
+        left_wall = Platform(pygame.Rect(-20, 0, 20, HEIGHT))
+        right_wall = Platform(pygame.Rect(self.width, 0, 20, HEIGHT))
+        self.platforms.extend([floor, left_wall, right_wall])
+
+        self.platforms.append(Platform(pygame.Rect(self.width // 2 - 160, 360, 320, 18)))
+        self.platforms.append(Platform(pygame.Rect(self.width // 2 - 300, 300, 180, 18)))
+
+    def _spawn_normal_mobs(self):
+        hp = self._mob_hp()
+
+        gob_count = 3 if self.dungeon == 1 else int(clamp(2 + self.dungeon // 3, 2, 7))
+        if self.hard:
+            gob_count = int(clamp(gob_count + 1, 2, 9))
+
+        skel_count = 0
+        if self.dungeon >= 4:
+            skel_count = int(clamp((self.dungeon - 3) // 2, 1, 6))
+            if self.hard:
+                skel_count = int(clamp(skel_count + 1, 1, 7))
+
+        caster_count = 0
+        if self.dungeon >= 11:
+            caster_count = int(clamp((self.dungeon - 10) // 3, 1, 4))
+            if self.hard and random.random() < 0.6:
+                caster_count += 1
+
+        candidate = [p.rect for p in self.platforms[1:] if p.rect.w >= 170]
+
+        def place(rect: pygame.Rect, w: int, h: int):
+            px = random.randint(rect.left + 10, rect.right - w - 10)
+            py = rect.top - h
+            return px, py
+
+        for _ in range(gob_count):
+            if candidate and random.random() < 0.7:
+                plat = random.choice(candidate)
+                x, y = place(plat, GOBLIN_W, GOBLIN_H)
+            else:
+                x = random.randint(240, self.width - 520)
+                y = GROUND_Y - GOBLIN_H
+            self.enemies.append(Goblin(x, y, hp=hp))
+
+        for _ in range(skel_count):
+            if candidate:
+                plat = random.choice(candidate)
+                x, y = place(plat, SKELE_W, SKELE_H)
+            else:
+                x = random.randint(320, self.width - 560)
+                y = GROUND_Y - SKELE_H
+            self.enemies.append(SkeletonArcher(x, y, hp=hp))
+
+        for _ in range(caster_count):
+            if candidate:
+                plat = random.choice(candidate)
+                x, y = place(plat, CASTER_W, CASTER_H)
+            else:
+                x = random.randint(380, self.width - 620)
+                y = GROUND_Y - CASTER_H
+            self.enemies.append(PillarCasterGolem(x, y, hp=hp))
+
+    def _spawn_boss(self):
+        hp_mult = 1.45 if self.hard else 1.0
+        if self.dungeon == 5:
+            hp = int(40 * hp_mult)
+            self.enemies.append(SlimeBoss(self.width // 2 - SLIME_BOSS_W // 2, GROUND_Y - SLIME_BOSS_H, hp))
+        elif self.dungeon == 10:
+            hp = int(60 * hp_mult)
+            self.enemies.append(GolemBoss(self.width // 2 - GOLEM_BOSS_W // 2, GROUND_Y - GOLEM_BOSS_H, hp))
+        elif self.dungeon == FINAL_LEVEL:
+            hp = int(DRAGON_HP_BASE * hp_mult)
+            self.enemies.append(DragonBoss(self.width // 2 - DRAGON_W // 2, 120, hp))
+        else:
+            hp = int(60 * hp_mult)
+            self.enemies.append(SlimeBoss(self.width // 2 - SLIME_BOSS_W // 2, GROUND_Y - SLIME_BOSS_H, hp))
+
+    def _build(self):
+        if self.is_boss:
+            self._build_boss_arena()
+            self._spawn_boss()
+        else:
+            self._build_obstacle_course()
+            self._spawn_normal_mobs()
+
+    def show_message(self, text: str, seconds: float = 1.2):
+        self.message = text
+        self.message_t = seconds
+
+    def boss_locked(self) -> bool:
+        boss_alive = any(e.is_boss and e.alive for e in self.enemies)
+        fx_alive = any(fx.alive for fx in self.death_fx)
+        return boss_alive or fx_alive
+
+    def get_boss(self) -> Optional[EnemyBase]:
+        for e in self.enemies:
+            if e.is_boss and e.alive:
+                return e
+        return None
+
+    def has_dragon_alive(self) -> bool:
+        return any(isinstance(e, DragonBoss) and e.alive for e in self.enemies)
+
+    def spawn_hit_sparks(self, x: float, y: float, big: bool = False):
+        for _ in range(8 if big else 6):
+            self.sparks.append(Spark(x + random.uniform(-8, 8), y + random.uniform(-8, 8), big=big))
+
+    def spawn_boss_death(self, kind: str, x: float, y: float):
+        self.death_fx.append(DeathEffect(kind, x, y))
+
+    def spawn_food_drop(self, x: float, y: float, player: Player, base_amount: float, prefer_big: bool = False):
+        if prefer_big and random.random() < 0.6:
+            kind = "feast"
+        else:
+            roll = random.random()
+            kind = "snack" if roll < 0.5 else "meal" if roll < 0.92 else "feast"
+        amt = base_amount * (0.75 if kind == "snack" else 1.45 if kind == "feast" else 1.0) * player.food_mult
+        ttl = FOOD_TTL * player.food_ttl_mult
+        self.food.append(Food(x, y, kind, amt, ttl))
+
+    def draw_dungeon_bg(self, screen, cam_x: float, t: float, vignette: pygame.Surface):
+        screen.fill(COL_BG)
+        brick_h = 32
+        brick_w = 64
+        px = cam_x * 0.25
+        for row in range(0, HEIGHT // brick_h + 2):
+            yy = row * brick_h
+            offset = (brick_w // 2) if (row % 2 == 1) else 0
+            for col in range(-2, WIDTH // brick_w + 4):
+                xx = col * brick_w - int(px) % brick_w - offset
+                rect = pygame.Rect(xx, yy, brick_w - 2, brick_h - 2)
+                pygame.draw.rect(screen, COL_BRICK, rect)
+                pygame.draw.rect(screen, COL_MORTAR, rect, width=1)
+
+        glow = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        for tx in self.torches:
+            sx = int(tx - cam_x)
+            if -240 <= sx <= WIDTH + 240:
+                flick = 0.55 + 0.45 * math.sin(t * 7.0 + tx * 0.01)
+                radius = int(92 + 24 * flick)
+                alpha = int(52 + 30 * flick)
+                pygame.draw.circle(glow, (140, 100, 45, alpha), (sx, 120), radius)
+        screen.blit(glow, (0, 0))
+        screen.blit(vignette, (0, 0))
+
+    def update(self, dt: float, t: float, player: Player, shake_cb: Callable[[float], None]):
+        new_pillars = 0
+        for tg in list(self.telegraphs):
+            if tg.update(dt):
+                self.hazards.append(PillarHazard(tg.x, max_h=tg.max_h))
+                new_pillars += 1
+        self.telegraphs = [tg for tg in self.telegraphs if tg.alive]
+        if new_pillars:
+            shake_cb(0.18)
+
+        for e in list(self.enemies):
+            if not e.alive:
+                continue
+            if isinstance(e, Goblin):
+                e.update(dt, self.platforms, player_x=player.rect.centerx, level=self.dungeon)
+            elif isinstance(e, SkeletonArcher):
+                e.update(dt, self.platforms, player_pos=player.pos, projectiles=self.projectiles, level=self.dungeon, hard=self.hard)
+            elif isinstance(e, PillarCasterGolem):
+                e.update(dt, self.platforms, player_x=player.rect.centerx, player_trail=player.trail,
+                         hazards=self.hazards, level=self.dungeon, level_width=self.width, hard=self.hard)
+            elif isinstance(e, SlimeMinion):
+                e.update(dt, self.platforms, player_pos=player.pos)
+            elif isinstance(e, SlimeBoss):
+                def slam_cb(cx: float):
+                    if abs(player.rect.centerx - cx) < 180 and player.rect.bottom >= GROUND_Y - 6:
+                        knock = -1 if player.rect.centerx < cx else 1
+                        player.hurt(18.0, -knock, slow=True)
+                    self.shockwaves.append(Shockwave(cx, GROUND_Y))
+                    shake_cb(0.32)
+                e.update(dt, self.platforms, player_pos=player.pos, enemies=self.enemies,
+                         projectiles=self.projectiles, level_width=self.width, hard=self.hard, on_slam=slam_cb)
+            elif isinstance(e, GolemBoss):
+                e.update(dt, self.platforms, player_pos=player.pos, player_vel=player.vel,
+                         telegraphs=self.telegraphs, walls=self.walls, level_width=self.width, hard=self.hard)
+            elif isinstance(e, DragonBoss):
+                e.update(
+                    dt,
+                    player_pos=player.pos,
+                    player_rect=player.rect,
+                    projectiles=self.projectiles,
+                    fire_patches=self.fire_patches,
+                    hard=self.hard,
+                    level_width=self.width,
+                    shake_cb=shake_cb,
+                    message_cb=self.show_message,
+                )
+
+        for pr in self.projectiles:
+            if pr.alive:
+                pr.update(dt, self.platforms)
+
+        for pr in self.projectiles:
+            if (not pr.alive) and pr.kind == "fire" and pr.hit_ground and pr.hit_pos:
+                fx, fy = pr.hit_pos
+                self.fire_patches.append(FirePatch(fx, fy, w=random.randint(54, 88), ttl=2.1 + (0.6 if self.hard else 0.0)))
+        self.projectiles = [p for p in self.projectiles if p.alive]
+
+        for hz in self.hazards:
+            if hz.alive:
+                hz.update(dt)
+        self.hazards = [h for h in self.hazards if h.alive]
+
+        for fp in self.fire_patches:
+            if fp.alive:
+                fp.update(dt)
+        self.fire_patches = [f for f in self.fire_patches if f.alive]
+
+        for f in self.food:
+            if f.alive:
+                f.update(dt, t)
+        self.food = [f for f in self.food if f.alive]
+
+        for s in self.sparks:
+            if s.alive:
+                s.update(dt)
+        self.sparks = [s for s in self.sparks if s.alive]
+
+        for sw in self.shockwaves:
+            if sw.alive:
+                sw.update(dt)
+        self.shockwaves = [sw for sw in self.shockwaves if sw.alive]
+
+        for w in self.walls:
+            if w.alive:
+                w.update(dt, self.width)
+        self.walls = [w for w in self.walls if w.alive]
+
+        for fx in self.death_fx:
+            if fx.alive:
+                fx.update(dt)
+        self.death_fx = [fx for fx in self.death_fx if fx.alive]
+
+        force_open = (self.dungeon == FINAL_LEVEL) and (not self.has_dragon_alive())
+        self.door.update(player.hunger, locked=self.boss_locked(), force_open=force_open)
+
+        if self.message_t > 0:
+            self.message_t = max(0.0, self.message_t - dt)
+            if self.message_t == 0:
+                self.message = ""
+
+        self.enemies = [e for e in self.enemies if e.alive]
+
+    def draw(self, screen, cam_x: float, t: float, vignette: pygame.Surface):
+        self.draw_dungeon_bg(screen, cam_x, t, vignette)
+
+        for p in self.platforms:
+            p.draw(screen, cam_x)
+        for tg in self.telegraphs:
+            tg.draw(screen, cam_x, t)
+        for hz in self.hazards:
+            hz.draw(screen, cam_x)
+        for fp in self.fire_patches:
+            fp.draw(screen, cam_x, t)
+
+        self.door.draw(screen, cam_x)
+
+        for e in self.enemies:
+            if isinstance(e, Goblin):
+                e.draw(screen, cam_x)
+            elif isinstance(e, SkeletonArcher):
+                e.draw(screen, cam_x)
+            elif isinstance(e, PillarCasterGolem):
+                e.draw(screen, cam_x)
+            elif isinstance(e, SlimeMinion):
+                e.draw(screen, cam_x)
+            elif isinstance(e, SlimeBoss):
+                e.draw(screen, cam_x)
+            elif isinstance(e, GolemBoss):
+                e.draw(screen, cam_x, t)
+            elif isinstance(e, DragonBoss):
+                e.draw(screen, cam_x, t)
+
+        for pr in self.projectiles:
+            pr.draw(screen, cam_x, t)
+
+        for w in self.walls:
+            w.draw(screen, cam_x, t)
+        for sw in self.shockwaves:
+            sw.draw(screen, cam_x)
+
+        for fx in self.death_fx:
+            fx.draw(screen, cam_x)
+        for f in self.food:
+            f.draw(screen, cam_x, t)
+        for s in self.sparks:
+            s.draw(screen, cam_x)
+
+
+# ----------------------------
+# Game (error pause + non-repeating cards + SIDE-SCROLL CAMERA INTEGRATED)
+# ----------------------------
+class Game:
+    def __init__(self):
+        pygame.init()
+        pygame.display.set_caption("Dungeons & Food")
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        self.clock = pygame.time.Clock()
+
+        self.font_big = pygame.font.SysFont(None, 72)
+        self.font_mid = pygame.font.SysFont(None, 36)
+        self.font = pygame.font.SysFont(None, 26)
+        self.font_small = pygame.font.SysFont(None, 20)
+
+        self.vignette = make_vignette((WIDTH, HEIGHT))
+
+        self.state = "MENU"
+        self.running = True
+
+        self.sound_on = True
+        self.difficulty = "Normal"
+
+        self.dungeon = 1
+        self.player = Player(120, GROUND_Y - PLAYER_H)
+        self.level = Level(self.dungeon, hard=False)
+
+        self.cam_x = 0.0
+        self.time = 0.0
+
+        self.checkpoint_level = 1
+        self.checkpoint_snapshot: Optional[dict] = None
+        self.picked_cards: set[str] = set()
+        self.pending_checkpoint_save = False
+
+        self.card_options: List[Card] = []
+
+        self.banner_text = ""
+        self.banner_t = 0.0
+        self.banner_total = 1.4
+
+        self.shake_t = 0.0
+        self.shake_mag = 0.0
+
+        self.btn_play = Button(pygame.Rect(WIDTH // 2 - 150, 314, 300, 58), "Play")
+        self.btn_settings = Button(pygame.Rect(WIDTH // 2 - 150, 384, 300, 58), "Settings")
+
+        self.btn_sound = Button(pygame.Rect(WIDTH // 2 - 40, 246, 250, 56), "Sound: On")
+        self.btn_diff = Button(pygame.Rect(WIDTH // 2 - 40, 320, 250, 56), "Difficulty: Normal")
+        self.btn_back = Button(pygame.Rect(WIDTH // 2 - 40, 394, 250, 56), "Back")
+
+        self.btn_continue = Button(pygame.Rect(WIDTH // 2 - 170, 300, 340, 54), "Continue")
+        self.btn_restart = Button(pygame.Rect(WIDTH // 2 - 170, 370, 340, 54), "Restart (lose progress)")
+        self.btn_exit = Button(pygame.Rect(WIDTH // 2 - 170, 440, 340, 54), "Exit")
+
+        self._err_lines: List[str] = []
+        self._err_scroll = 0
+
+    def is_hard(self) -> bool:
+        return self.difficulty == "Hard"
+
+    def add_shake(self, amount: float):
+        self.shake_t = max(self.shake_t, amount)
+        self.shake_mag = max(self.shake_mag, 7.0 + 20.0 * amount)
+
+    def hunger_drain_rate(self) -> float:
+        # No passive hunger drain on boss levels (every 5 levels: 5, 10, 15).
+        if self.level.is_boss and self.dungeon % MILESTONE_EVERY == 0:
+            return 0.0
+
+        base = BASE_DRAIN + (self.dungeon - 1) * DRAIN_PER_LEVEL
+        if self.is_hard():
+            base *= 1.20
+        return base * self.player.drain_mult * self.player.streak_drain_mult()
+
+    def show_error_screen(self, tb: str):
+        print(tb)
+        self._err_lines = tb.splitlines()
+        self._err_scroll = 0
+        self.state = "ERROR"
+
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        return
+                    if event.key == pygame.K_UP:
+                        self._err_scroll = max(0, self._err_scroll - 1)
+                    if event.key == pygame.K_DOWN:
+                        self._err_scroll = min(max(0, len(self._err_lines) - 1), self._err_scroll + 1)
+
+            self.screen.fill((10, 10, 14))
+            draw_text(self.screen, self.font_mid, "ERROR (paused)", 20, 10, (255, 120, 120))
+            draw_text(self.screen, self.font_small, "Up/Down = scroll  •  Esc = quit", 20, 42, COL_TEXT_DIM)
+
+            y = 70
+            max_lines = (HEIGHT - 90) // 18
+            for i in range(max_lines):
+                idx = self._err_scroll + i
+                if idx >= len(self._err_lines):
+                    break
+                draw_text(self.screen, self.font_small, self._err_lines[idx], 20, y, (240, 240, 255))
+                y += 18
+
+            pygame.display.flip()
+            self.clock.tick(30)
+
+    def build_card_pool(self) -> List[Card]:
+        p = self.player
+        picked = self.picked_cards
+
+        def add_if(key, card):
+            if key in picked:
+                return None
+            return card
+
+        def food2x(): p.food_mult = max(p.food_mult, 2.0)
+        def food3x(): p.food_mult = max(p.food_mult, 3.0)
+        def dmg2x(): p.damage_mult = max(p.damage_mult, 2.0)
+        def dmg3x(): p.damage_mult = max(p.damage_mult, 3.0)
+        def unlock_dash(): p.dash_unlocked = True
+        def unlock_block(): p.block_unlocked = True
+        def unlock_deflect(): p.deflect_unlocked = True
+        def speed_up(): p.run_mult = max(p.run_mult, 1.25)
+        def jump_up(): p.jump_mult = max(p.jump_mult, 1.20)
+        def triple_jump(): p.max_jumps = max(p.max_jumps, 3)
+        def drain_down(): p.drain_mult = min(p.drain_mult, 0.75)
+        def tough(): p.damage_taken_mult = min(p.damage_taken_mult, 0.80)
+        def arrowproof(): p.projectile_resist = min(p.projectile_resist, 0.70)
+        def boss_hunter(): p.boss_damage_mult = max(p.boss_damage_mult, 1.35)
+        def vamp(): p.hunger_on_kill = max(p.hunger_on_kill, 3.0)
+        def longer_blade(): p.range_mult = max(p.range_mult, 1.25)
+        def faster_swings(): p.attack_cd_mult = min(p.attack_cd_mult, 0.80)
+        def dash_mastery():
+            p.dash_unlocked = True
+            p.dash_cd_mult = min(p.dash_cd_mult, 0.75)
+        def shield_mastery():
+            p.block_unlocked = True
+            p.block_time_mult = max(p.block_time_mult, 1.25)
+        def feast_finder(): p.feast_chance = min(0.30, p.feast_chance + 0.10)
+        def fresh_food(): p.food_ttl_mult = max(p.food_ttl_mult, 1.35)
+        def emergency_meal(): p.hunger = min(HUNGER_MAX, p.hunger + 28.0)
+        def fire_ward(): p.burn_resist = min(p.burn_resist, 0.60)
+
+        raw: List[Optional[Card]] = [
+            add_if("food2x", Card("food2x", "Chef’s Blessing", "Food restores 2× hunger.", "passive", lambda g: food2x())),
+            add_if("food3x", Card("food3x", "Banquet Pact", "Food restores 3× hunger.", "passive", lambda g: food3x())),
+            add_if("dmg2x", Card("dmg2x", "Diamond Blade", "Sword becomes 2× damage (blue).", "passive", lambda g: dmg2x())),
+            add_if("dmg3x", Card("dmg3x", "Blood Blade", "Sword becomes 3× damage (red).", "passive", lambda g: dmg3x())),
+            add_if("dash", Card("dash", "Shadow Dash", "Unlock Dash (Left Shift).", "ability", lambda g: unlock_dash())),
+            add_if("dash2", Card("dash2", "Dash Mastery", "Dash cooldown reduced.", "ability", lambda g: dash_mastery())),
+            add_if("block", Card("block", "Guardian Block", "Unlock Block (F) to negate hits.", "ability", lambda g: unlock_block())),
+            add_if("block2", Card("block2", "Shield Mastery", "Block lasts longer.", "ability", lambda g: shield_mastery())),
+            add_if("deflect", Card("deflect", "Mirror Guard", "Blocking reflects projectiles back!", "ability", lambda g: unlock_deflect())),
+            add_if("speed", Card("speed", "Swift Steps", "Run speed +25%.", "passive", lambda g: speed_up())),
+            add_if("jump", Card("jump", "Spring Legs", "Jump height +20%.", "passive", lambda g: jump_up())),
+            add_if("jump3", Card("jump3", "Triple Jump", "Gain a 3rd jump.", "passive", lambda g: triple_jump())),
+            add_if("drain", Card("drain", "Light Stomach", "Hunger drains 25% slower.", "passive", lambda g: drain_down())),
+            add_if("tough", Card("tough", "Iron Will", "Take 20% less hunger damage.", "passive", lambda g: tough())),
+            add_if("arrow", Card("arrow", "Arrowproof", "Take 30% less projectile damage.", "passive", lambda g: arrowproof())),
+            add_if("boss", Card("boss", "Boss Hunter", "+35% damage vs bosses.", "passive", lambda g: boss_hunter())),
+            add_if("vamp", Card("vamp", "Blood Feast", "+3 hunger on every kill.", "passive", lambda g: vamp())),
+            add_if("range", Card("range", "Long Blade", "Slash range increases.", "passive", lambda g: longer_blade())),
+            add_if("atkspd", Card("atkspd", "Quick Hands", "Attack cooldown reduced.", "passive", lambda g: faster_swings())),
+            add_if("feast", Card("feast", "Feast Finder", "Higher chance for big food drops.", "passive", lambda g: feast_finder())),
+            add_if("fresh", Card("fresh", "Fresh Supplies", "Food lasts longer before despawn.", "passive", lambda g: fresh_food())),
+            add_if("meal", Card("meal", "Emergency Rations", "Instantly gain +28 hunger.", "passive", lambda g: emergency_meal())),
+            add_if("fireward", Card("fireward", "Fire Ward", "Burn damage reduced (dragon counter).", "passive", lambda g: fire_ward())),
+        ]
+        cards = [c for c in raw if c is not None]
+
+        filtered = []
+        for c in cards:
+            if c.key == "dash" and p.dash_unlocked:
+                continue
+            if c.key == "block" and p.block_unlocked:
+                continue
+            if c.key == "deflect" and p.deflect_unlocked:
+                continue
+            filtered.append(c)
+
+        return filtered if len(filtered) >= 3 else cards
+
+    def open_cards(self):
+        pool = self.build_card_pool()
+        if len(pool) == 0:
+            self.state = "PLAY"
+            return
+        self.card_options = random.sample(pool, min(3, len(pool)))
+        self.pending_checkpoint_save = True
+        self.state = "CARDS"
+
+    def apply_card(self, idx: int):
+        if idx < 0 or idx >= len(self.card_options):
+            return
+        c = self.card_options[idx]
+        c.apply(self)
+        self.picked_cards.add(c.key)
+        self.level.show_message(f"Chosen: {c.title}", seconds=1.2)
+        self.card_options = []
+        self.state = "PLAY"
+        if self.pending_checkpoint_save and (self.dungeon % MILESTONE_EVERY == 0):
+            self.save_checkpoint()
+        self.pending_checkpoint_save = False
+
+    def save_checkpoint(self):
+        self.checkpoint_level = self.dungeon
+        self.checkpoint_snapshot = {
+            "player": self.player.snapshot(),
+            "picked_cards": list(self.picked_cards),
+            "difficulty": self.difficulty,
+        }
+
+    def continue_from_checkpoint(self):
+        if not self.checkpoint_snapshot:
+            self.state = "CHECKLIST"
+            return
+        self.dungeon = self.checkpoint_level
+        self.difficulty = self.checkpoint_snapshot.get("difficulty", self.difficulty)
+        self.level = Level(self.dungeon, hard=self.is_hard())
+        self.player.apply_snapshot(self.checkpoint_snapshot["player"])
+        self.picked_cards = set(self.checkpoint_snapshot.get("picked_cards", []))
+        self.player.reset_position(120, GROUND_Y - PLAYER_H)
+        self.cam_x = 0.0
+        self.state = "PLAY"
+
+    def start_new_run(self):
+        self.dungeon = 1
+        self.player = Player(120, GROUND_Y - PLAYER_H)
+        self.player.hunger = START_HUNGER
+        self.picked_cards = set()
+        self.level = Level(self.dungeon, hard=self.is_hard())
+        self.cam_x = 0.0
+        self.time = 0.0
+        self.save_checkpoint()
+        self.banner_text = "Dungeon Level 1"
+        self.banner_t = self.banner_total
+
+    def next_level(self):
+        self.dungeon += 1
+        self.player.hunger = min(HUNGER_MAX, self.player.hunger + 8.0)
+        self.level = Level(self.dungeon, hard=self.is_hard())
+        self.player.reset_position(120, GROUND_Y - PLAYER_H)
+
+        # reset camera so we immediately see progression
+        self.cam_x = 0.0
+
+        self.banner_text = f"Dungeon Level {self.dungeon}"
+        if self.dungeon % MILESTONE_EVERY == 0:
+            self.banner_text = f"BOSS ARENA — Level {self.dungeon}"
+        self.banner_t = self.banner_total
+
+        if self.dungeon % MILESTONE_EVERY == 0:
+            self.open_cards()
+
+    def draw_bottom_hint(self, text: str):
+        bar = pygame.Rect(80, HEIGHT - 54, WIDTH - 160, 34)
+        draw_panel(self.screen, bar, fill=(24, 28, 40), border=(110, 145, 200), radius=18, shadow=False)
+        draw_text(self.screen, self.font_small, text, bar.centerx, bar.centery + 1, (220, 232, 248), center=True)
+
+    def draw_menu_showcase(self):
+        panel = pygame.Rect(WIDTH // 2 - 260, 192, 520, 104)
+        draw_panel(self.screen, panel, fill=(23, 30, 42), border=(120, 165, 220), radius=24, shadow=False)
+        draw_text(self.screen, self.font_small, "Hero vs dungeon monsters", panel.centerx, panel.y + 18, (215, 228, 248), center=True)
+
+        base_y = panel.y + 66
+        # hero
+        hx = panel.x + 74
+        pygame.draw.ellipse(self.screen, (0, 0, 0), pygame.Rect(hx - 18, base_y + 18, 36, 8))
+        pygame.draw.rect(self.screen, COL_ARMOR, pygame.Rect(hx - 12, base_y - 10, 24, 30), border_radius=9)
+        pygame.draw.rect(self.screen, COL_OUTLINE, pygame.Rect(hx - 12, base_y - 10, 24, 30), 2, border_radius=9)
+        pygame.draw.rect(self.screen, COL_ARMOR_SHINE, pygame.Rect(hx - 8, base_y - 24, 16, 16), border_radius=7)
+        pygame.draw.rect(self.screen, COL_OUTLINE, pygame.Rect(hx - 8, base_y - 24, 16, 16), 2, border_radius=7)
+        pygame.draw.line(self.screen, COL_SWORD_NORMAL, (hx + 14, base_y - 4), (hx + 30, base_y - 18), 4)
+        pygame.draw.line(self.screen, COL_OUTLINE, (hx + 14, base_y - 4), (hx + 30, base_y - 18), 2)
+
+        draw_text(self.screen, self.font_mid, "VS", panel.centerx, base_y - 8, (255, 236, 168), center=True)
+
+        # slime
+        sx = panel.centerx + 56
+        slime = pygame.Rect(sx - 18, base_y - 6, 36, 24)
+        pygame.draw.ellipse(self.screen, COL_SLIME, slime)
+        pygame.draw.ellipse(self.screen, COL_OUTLINE, slime, 2)
+        pygame.draw.circle(self.screen, (20, 24, 28), (slime.centerx - 5, slime.centery), 2)
+        pygame.draw.circle(self.screen, (20, 24, 28), (slime.centerx + 5, slime.centery), 2)
+
+        # goblin
+        gx = panel.centerx + 122
+        pygame.draw.rect(self.screen, COL_GOBLIN, pygame.Rect(gx - 14, base_y - 10, 28, 28), border_radius=8)
+        pygame.draw.rect(self.screen, COL_OUTLINE, pygame.Rect(gx - 14, base_y - 10, 28, 28), 2, border_radius=8)
+        pygame.draw.polygon(self.screen, COL_GOBLIN, [(gx - 12, base_y - 6), (gx - 22, base_y - 12), (gx - 8, base_y - 2)])
+        pygame.draw.polygon(self.screen, COL_GOBLIN, [(gx + 12, base_y - 6), (gx + 22, base_y - 12), (gx + 8, base_y - 2)])
+        pygame.draw.line(self.screen, (245, 235, 120), (gx - 5, base_y), (gx - 1, base_y), 2)
+        pygame.draw.line(self.screen, (245, 235, 120), (gx + 1, base_y), (gx + 5, base_y), 2)
+
+        # skeleton
+        kx = panel.centerx + 186
+        pygame.draw.rect(self.screen, COL_SKELE, pygame.Rect(kx - 13, base_y - 12, 26, 30), border_radius=8)
+        pygame.draw.rect(self.screen, COL_OUTLINE, pygame.Rect(kx - 13, base_y - 12, 26, 30), 2, border_radius=8)
+        pygame.draw.rect(self.screen, (20, 20, 26), pygame.Rect(kx - 8, base_y - 4, 5, 5), border_radius=2)
+        pygame.draw.rect(self.screen, (20, 20, 26), pygame.Rect(kx + 3, base_y - 4, 5, 5), border_radius=2)
+        pygame.draw.arc(self.screen, (128, 102, 72), pygame.Rect(kx + 10, base_y - 12, 12, 26), -1.2, 1.2, 2)
+
+        # boss crown
+        bx = panel.x + panel.w - 52
+        crown = pygame.Rect(bx - 16, base_y - 28, 32, 14)
+        pygame.draw.rect(self.screen, COL_CROWN, crown, border_radius=4)
+        pygame.draw.rect(self.screen, COL_OUTLINE, crown, 2, border_radius=4)
+        pygame.draw.polygon(self.screen, COL_CROWN, [(crown.x + 2, crown.y + 2), (crown.x + 8, crown.y - 8), (crown.x + 14, crown.y + 2), (crown.x + 20, crown.y - 10), (crown.x + 26, crown.y + 2), (crown.right - 2, crown.y - 7), (crown.right - 2, crown.y + 2)])
+        pygame.draw.ellipse(self.screen, COL_SLIME_RED, pygame.Rect(bx - 19, base_y - 8, 38, 24))
+        pygame.draw.ellipse(self.screen, COL_OUTLINE, pygame.Rect(bx - 19, base_y - 8, 38, 24), 2)
+
+    def draw_meadow(self):
+        for y in range(HEIGHT):
+            t = y / HEIGHT
+            col = (
+                int(lerp(COL_SKY_TOP[0], COL_SKY_BOTTOM[0], t)),
+                int(lerp(COL_SKY_TOP[1], COL_SKY_BOTTOM[1], t)),
+                int(lerp(COL_SKY_TOP[2], COL_SKY_BOTTOM[2], t)),
+            )
+            pygame.draw.line(self.screen, col, (0, y), (WIDTH, y))
+
+        # sun glow
+        sun_x, sun_y = WIDTH - 118, 94
+        glow = pygame.Surface((180, 180), pygame.SRCALPHA)
+        pygame.draw.circle(glow, (255, 235, 150, 70), (90, 90), 72)
+        pygame.draw.circle(glow, (255, 245, 190, 120), (90, 90), 44)
+        self.screen.blit(glow, (sun_x - 90, sun_y - 90))
+        pygame.draw.circle(self.screen, (255, 244, 165), (sun_x, sun_y), 30)
+
+        cloud_offset = self.time * 18.0
+        draw_cloud(self.screen, ((110 + cloud_offset * 0.55) % (WIDTH + 180)) - 140, 56, 1.05, 205)
+        draw_cloud(self.screen, ((410 + cloud_offset * 0.35) % (WIDTH + 220)) - 170, 88, 0.9, 195)
+        draw_cloud(self.screen, ((700 + cloud_offset * 0.48) % (WIDTH + 240)) - 150, 62, 1.2, 215)
+
+        # distant hills
+        pygame.draw.ellipse(self.screen, (118, 204, 132), pygame.Rect(-50, HEIGHT - 274, 360, 210))
+        pygame.draw.ellipse(self.screen, (104, 192, 120), pygame.Rect(170, HEIGHT - 290, 410, 230))
+        pygame.draw.ellipse(self.screen, (92, 184, 112), pygame.Rect(500, HEIGHT - 278, 430, 225))
+        pygame.draw.ellipse(self.screen, (78, 170, 98), pygame.Rect(-60, HEIGHT - 208, 420, 180))
+        pygame.draw.ellipse(self.screen, (70, 160, 92), pygame.Rect(250, HEIGHT - 224, 470, 190))
+        pygame.draw.ellipse(self.screen, (62, 150, 84), pygame.Rect(590, HEIGHT - 212, 390, 180))
+
+        path = [(WIDTH // 2 - 42, HEIGHT - 32), (WIDTH // 2 - 118, HEIGHT - 128), (WIDTH // 2 - 54, HEIGHT - 198), (WIDTH // 2 + 38, HEIGHT - 222), (WIDTH // 2 + 86, HEIGHT - 264), (WIDTH // 2 + 34, HEIGHT - 302), (WIDTH // 2 - 10, HEIGHT - 288), (WIDTH // 2 - 34, HEIGHT - 240)]
+        pygame.draw.polygon(self.screen, (208, 192, 150), path)
+        pygame.draw.polygon(self.screen, (162, 146, 112), path, 3)
+        for sx, sy, sw, sh in ((WIDTH // 2 - 18, HEIGHT - 92, 20, 8), (WIDTH // 2 - 54, HEIGHT - 134, 18, 7), (WIDTH // 2 + 14, HEIGHT - 172, 22, 8)):
+            pygame.draw.ellipse(self.screen, (176, 160, 126), pygame.Rect(sx, sy, sw, sh))
+
+        pygame.draw.rect(self.screen, COL_GRASS_1, pygame.Rect(0, HEIGHT - 176, WIDTH, 176))
+        pygame.draw.rect(self.screen, COL_GRASS_2, pygame.Rect(0, HEIGHT - 102, WIDTH, 102))
+
+        # flowers and grass detail
+        for i in range(0, WIDTH, 18):
+            base_y = HEIGHT - 102 + (i % 7)
+            blade_h = 12 + (i % 5)
+            pygame.draw.line(self.screen, (28, 118, 50), (i, base_y), (i + 3, base_y - blade_h), 2)
+            if i % 72 == 0:
+                fx = i + 8
+                fy = HEIGHT - 86 - (i % 11)
+                for dx, dy in ((0, -3), (3, 0), (0, 3), (-3, 0)):
+                    pygame.draw.circle(self.screen, (255, 230, 245), (fx + dx, fy + dy), 2)
+                pygame.draw.circle(self.screen, (245, 205, 96), (fx, fy), 2)
+
+        # dungeon with banners and torches
+        base = pygame.Rect(WIDTH // 2 - 118, HEIGHT - 304, 236, 258)
+        tower_l = pygame.Rect(base.x - 30, base.y + 28, 44, 184)
+        tower_r = pygame.Rect(base.right - 14, base.y + 28, 44, 184)
+        for part in (tower_l, tower_r, base):
+            pygame.draw.rect(self.screen, (72, 74, 92), part, border_radius=18)
+            pygame.draw.rect(self.screen, (24, 24, 32), part, 3, border_radius=18)
+        arch = pygame.Rect(base.x + 40, base.y + 58, 156, 188)
+        pygame.draw.rect(self.screen, (10, 10, 16), arch, border_radius=34)
+        pygame.draw.rect(self.screen, (30, 30, 40), arch, 3, border_radius=34)
+        for wx in (tower_l.centerx, tower_r.centerx, base.centerx - 56, base.centerx + 56):
+            pygame.draw.rect(self.screen, (26, 26, 34), pygame.Rect(wx - 8, base.y + 62, 16, 30), border_radius=6)
+            pygame.draw.rect(self.screen, (18, 18, 24), pygame.Rect(wx - 7, base.y + 104, 14, 26), border_radius=6)
+        draw_banner_flag(self.screen, base.x + 24, base.y + 74, (188, 58, 76), self.time, flip=-1)
+        draw_banner_flag(self.screen, base.right - 24, base.y + 74, (68, 92, 188), self.time, flip=1)
+        draw_torch(self.screen, arch.x + 22, arch.y + 86, self.time)
+        draw_torch(self.screen, arch.right - 22, arch.y + 86, self.time)
+        shadow = pygame.Surface((base.w + 180, base.h + 150), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow, (0, 0, 0, 82), pygame.Rect(0, 0, shadow.get_width(), shadow.get_height()))
+        self.screen.blit(shadow, (base.centerx - shadow.get_width() // 2, base.centery - shadow.get_height() // 2 + 30))
+
+    def run(self):
+        try:
+            while self.running:
+                dt = min(self.clock.tick(FPS) / 1000.0, 1 / 30)
+                self.time += dt
+
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        self.running = False
+
+                    if self.state == "MENU":
+                        self.handle_menu_event(event)
+                    elif self.state == "SETTINGS":
+                        self.handle_settings_event(event)
+                    elif self.state == "CHECKLIST":
+                        self.handle_checklist_event(event)
+                    elif self.state == "PLAY":
+                        self.handle_play_event(event)
+                    elif self.state == "CARDS":
+                        self.handle_cards_event(event)
+                    elif self.state == "GAMEOVER":
+                        self.handle_gameover_event(event)
+                    elif self.state == "WIN":
+                        self.handle_win_event(event)
+
+                if self.state == "MENU":
+                    self.draw_menu()
+                elif self.state == "SETTINGS":
+                    self.draw_settings()
+                elif self.state == "CHECKLIST":
+                    self.draw_checklist()
+                elif self.state == "PLAY":
+                    self.update_play(dt)
+                    self.draw_play()
+                elif self.state == "CARDS":
+                    self.draw_play()
+                    self.draw_cards_overlay()
+                elif self.state == "GAMEOVER":
+                    self.draw_gameover()
+                elif self.state == "WIN":
+                    self.draw_win()
+
+                pygame.display.flip()
+
+        except Exception:
+            self.show_error_screen(traceback.format_exc())
+
+        pygame.quit()
+        sys.exit(0)
+
+    def handle_menu_event(self, event):
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
+            self.state = "CHECKLIST"
+        if self.btn_play.clicked(event):
+            self.state = "CHECKLIST"
+        if self.btn_settings.clicked(event):
+            self.state = "SETTINGS"
+
+    def handle_settings_event(self, event):
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self.state = "MENU"
+        if self.btn_sound.clicked(event):
+            self.sound_on = not self.sound_on
+        if self.btn_diff.clicked(event):
+            self.difficulty = "Hard" if self.difficulty == "Normal" else "Normal"
+        if self.btn_back.clicked(event):
+            self.state = "MENU"
+
+    def handle_checklist_event(self, event):
+        if event.type == pygame.KEYDOWN:
+            if event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                self.start_new_run()
+                self.state = "PLAY"
+            if event.key == pygame.K_ESCAPE:
+                self.state = "MENU"
+
+    def handle_play_event(self, event):
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self.state = "MENU"
+
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_w:
+            self.player.try_jump()
+
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_LSHIFT:
+            self.player.start_dash()
+
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_f:
+            self.player.start_block()
+
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_e:
+            near = self.player.rect.colliderect(self.level.door.rect.inflate(32, 24))
+            if near and self.level.door.open and (not self.level.boss_locked()):
+                if self.dungeon == FINAL_LEVEL and (not self.level.has_dragon_alive()):
+                    self.state = "WIN"
+                else:
+                    self.next_level()
+                return
+
+            if near and self.level.door.locked:
+                self.level.show_message("Door locked — defeat the boss!", 1.3)
+                return
+
+            if near and not self.level.door.open:
+                self.level.show_message(f"Need {int(DOOR_THRESHOLD)}% hunger for the door.", 1.3)
+
+            self.player.start_attack()
+
+    def handle_cards_event(self, event):
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_1:
+                self.apply_card(0)
+            elif event.key == pygame.K_2:
+                self.apply_card(1)
+            elif event.key == pygame.K_3:
+                self.apply_card(2)
+
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            for i, r in enumerate(self.card_rects()):
+                if r.collidepoint(event.pos):
+                    self.apply_card(i)
+
+    def handle_gameover_event(self, event):
+        if self.btn_exit.clicked(event):
+            self.running = False
+        if self.btn_restart.clicked(event):
+            self.state = "CHECKLIST"
+        if self.btn_continue.clicked(event):
+            self.continue_from_checkpoint()
+
+    def handle_win_event(self, event):
+        if event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_SPACE):
+            self.state = "CHECKLIST"
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self.state = "MENU"
+
+    def update_play(self, dt: float):
+        keys = pygame.key.get_pressed()
+        self.player.update(dt, keys, self.level.platforms)
+
+        # --- Smooth side-scrolling camera follow (integrated) ---
+        desired = self.player.rect.centerx - CAMERA_CENTER_X
+        desired = clamp(desired, 0.0, max(0.0, self.level.width - WIDTH))
+        self.cam_x = lerp(self.cam_x, desired, CAMERA_SMOOTH)
+
+        self.player.hunger = max(0.0, self.player.hunger - self.hunger_drain_rate() * dt)
+
+        if self.shake_t > 0:
+            self.shake_t = max(0.0, self.shake_t - dt)
+            if self.shake_t == 0:
+                self.shake_mag = 0.0
+
+        self.level.update(dt, self.time, self.player, shake_cb=self.add_shake)
+
+        ar = self.player.attack_rect()
+        if ar is not None:
+            for e in list(self.level.enemies):
+                if not e.alive:
+                    continue
+                if ar.colliderect(e.rect):
+                    dmg = self.player.attack_damage(vs_boss=e.is_boss)
+                    died = e.take_hit(dmg, self.player.attack_serial)
+                    self.level.spawn_hit_sparks(e.rect.centerx, e.rect.centery, big=e.is_boss)
+                    if died:
+                        self.player.add_kill()
+                        self.level.spawn_food_drop(e.rect.centerx - 9, e.rect.top - 18, self.player, FOOD_BASE, prefer_big=e.is_boss)
+                        if isinstance(e, DragonBoss):
+                            self.level.spawn_boss_death("dragon", e.rect.centerx, e.rect.centery)
+                            self.level.show_message("DRAGON SLAIN!", 2.0)
+                        elif isinstance(e, GolemBoss):
+                            self.level.spawn_boss_death("golem", e.rect.centerx, e.rect.centery)
+                        elif isinstance(e, SlimeBoss):
+                            self.level.spawn_boss_death("slime", e.rect.centerx, e.rect.bottom)
+                        if e.is_boss:
+                            self.level.show_message(f"{e.name} has been defeated!", 2.0)
+                            for _ in range(8):
+                                self.level.spawn_food_drop(
+                                    e.rect.centerx + random.randint(-110, 110),
+                                    e.rect.top - 20,
+                                    self.player,
+                                    18.0,
+                                    prefer_big=True,
+                                )
+
+        for e in self.level.enemies:
+            if not e.alive:
+                continue
+            if self.player.rect.colliderect(e.rect):
+                if (not e.is_boss) and self.player.prev_rect.bottom <= e.rect.top + 6 and self.player.vel.y > 0:
+                    died = e.take_hit(self.player.attack_damage(vs_boss=False), self.player.attack_serial + 999999)
+                    self.player.vel.y = -540.0
+                    if died:
+                        self.player.add_kill()
+                        self.level.spawn_food_drop(e.rect.centerx - 9, e.rect.top - 18, self.player, FOOD_BASE)
+                else:
+                    knock = -1 if self.player.rect.centerx < e.rect.centerx else 1
+                    if isinstance(e, DragonBoss) and e.swipe_active > 0:
+                        if e.swipe_hitbox().colliderect(self.player.rect):
+                            self.player.hurt(18.0, -knock, projectile=False)
+                    elif isinstance(e, DragonBoss) and e.swooping:
+                        if e.swoop_hitbox().colliderect(self.player.rect):
+                            self.player.hurt(16.0, -knock, projectile=False)
+                    else:
+                        self.player.hurt(e.touch_damage(), -knock, slow=e.touch_slow())
+
+        for pr in self.level.projectiles:
+            if not pr.alive:
+                continue
+            if pr.owner == "enemy" and pr.rect.colliderect(self.player.rect):
+                if self.player.is_blocking():
+                    if self.player.deflect_unlocked:
+                        pr.reflect(self.player.facing, new_dmg=float(self.player.attack_damage(vs_boss=False)))
+                        self.level.show_message("DEFLECT!", 0.5)
+                        self.add_shake(0.08)
+                    else:
+                        pr.alive = False
+                    continue
+
+                pr.alive = False
+                knock = -1 if self.player.rect.centerx < pr.rect.centerx else 1
+                if pr.kind == "fire":
+                    self.player.apply_burn(DRAGON_BURN_DURATION)
+                    self.player.hurt(0.0, -knock, projectile=True)
+                else:
+                    self.player.hurt(pr.dmg, -knock, slow=(pr.kind == "slime"), projectile=True)
+
+        for hz in self.level.hazards:
+            if hz.alive and hz.rect.colliderect(self.player.rect):
+                if not self.player.is_blocking():
+                    knock = -1 if self.player.rect.centerx < hz.rect.centerx else 1
+                    self.player.hurt(PILLAR_PENALTY, -knock, projectile=True)
+
+        for w in self.level.walls:
+            if w.alive and w.rect.colliderect(self.player.rect):
+                if not self.player.is_blocking():
+                    knock = -1 if self.player.rect.centerx < w.rect.centerx else 1
+                    self.player.hurt(1.5, -knock, projectile=True)  # wall push (low damage)
+
+        for f in self.level.food:
+            if f.alive and self.player.rect.colliderect(f.rect):
+                f.alive = False
+                self.player.hunger = min(HUNGER_MAX, self.player.hunger + f.amount)
+
+        if self.player.hunger <= 0:
+            self.state = "GAMEOVER"
+
+        if self.dungeon == FINAL_LEVEL and (not self.level.has_dragon_alive()) and (not self.level.boss_locked()):
+            self.state = "WIN"
+
+    def draw_play(self):
+        shake_x = 0
+        if self.shake_t > 0 and self.shake_mag > 0:
+            shake_x = random.randint(-int(self.shake_mag), int(self.shake_mag))
+        cam = self.cam_x + shake_x
+
+        self.level.draw(self.screen, cam, self.time, self.vignette)
+        self.player.draw(self.screen, cam, self.time)
+        self.draw_hud()
+        self.draw_boss_bar()
+
+    def draw_hud(self):
+        draw_text(self.screen, self.font_mid, f"Level {self.dungeon}", 16, 12, COL_TEXT)
+        draw_text(self.screen, self.font_small, f"Mode: {self.difficulty}", 16, 40, COL_TEXT_DIM)
+
+        bar_w, bar_h = 320, 18
+        x = WIDTH - bar_w - 18
+        y = 18
+        pygame.draw.rect(self.screen, COL_HP_BG, pygame.Rect(x, y, bar_w, bar_h), 0, border_radius=7)
+        pygame.draw.rect(self.screen, COL_OUTLINE, pygame.Rect(x, y, bar_w, bar_h), 2, border_radius=7)
+        fill_w = int((self.player.hunger / HUNGER_MAX) * (bar_w - 4))
+        pygame.draw.rect(self.screen, (235, 235, 245), pygame.Rect(x + 2, y + 2, max(0, fill_w), bar_h - 4), 0, border_radius=6)
+
+        mark_x = x + 2 + int((DOOR_THRESHOLD / HUNGER_MAX) * (bar_w - 4))
+        pygame.draw.line(self.screen, (150, 150, 170), (mark_x, y + 2), (mark_x, y + bar_h - 2), 2)
+
+        if self.level.boss_locked():
+            door_txt = "Door: LOCKED (boss alive)"
+        elif self.level.door.open:
+            door_txt = "Door: OPEN (E)"
+        else:
+            door_txt = f"Door: needs {int(DOOR_THRESHOLD)}% hunger"
+        draw_text(self.screen, self.font_small, door_txt, WIDTH - 330, 44, COL_TEXT_DIM)
+
+        if self.player.kill_streak > 0:
+            draw_text(self.screen, self.font_small, f"Kill Streak: {self.player.kill_streak}", 16, 64, (200, 235, 255))
+            draw_text(self.screen, self.font_small, "+Speed/+Jump, -Drain", 16, 82, (200, 235, 255))
+        if self.player.rush_t > 0:
+            draw_text(self.screen, self.font_small, f"Rush x{self.player.rush_stacks}", 16, 102, (210, 220, 255))
+
+        if self.player.burn_t > 0:
+            draw_text(self.screen, self.font_small, "BURNING", 16, 122, (255, 180, 100))
+
+        if self.level.is_boss and self.dungeon % MILESTONE_EVERY == 0:
+            draw_text(self.screen, self.font_small, "BOSS LEVEL: no passive hunger drain", WIDTH - 360, 64, (255, 210, 140))
+        if self.dungeon == FINAL_LEVEL:
+            draw_text(self.screen, self.font_small, "Fire applies burn ticks (health)", WIDTH - 360, 82, (255, 210, 140))
+
+        if self.level.message:
+            draw_text(self.screen, self.font, self.level.message, WIDTH // 2, 78, COL_TEXT, center=True)
+
+    def draw_boss_bar(self):
+        boss = self.level.get_boss()
+        if not boss:
+            return
+        w, h = 520, 18
+        x = WIDTH // 2 - w // 2
+        y = 14
+        draw_text(self.screen, self.font_small, boss.name, WIDTH // 2, y - 8, COL_TEXT, center=True)
+        draw_hp_bar(self.screen, x, y, w, h, boss.hp, boss.max_hp)
+
+    def draw_menu(self):
+        self.draw_meadow()
+        title_panel = pygame.Rect(WIDTH // 2 - 255, 58, 510, 122)
+        draw_panel(self.screen, title_panel, fill=(28, 36, 52), border=(135, 185, 255), radius=28)
+        draw_text(self.screen, self.font_big, "Dungeons & Food", WIDTH // 2, 104, (245, 248, 255), center=True)
+        draw_text(self.screen, self.font_small, "A brighter meadow above. A cursed dungeon below.", WIDTH // 2, 140, (210, 224, 245), center=True)
+
+        self.draw_menu_showcase()
+
+        mouse = pygame.mouse.get_pos()
+        self.btn_play.draw(self.screen, self.font_mid, mouse)
+        self.btn_settings.draw(self.screen, self.font_mid, mouse)
+
+        self.draw_bottom_hint("A/D Move   •   W Jump   •   E Attack / Use   •   Shift Dash   •   F Block   •   Esc Menu")
+
+    def draw_settings(self):
+        self.draw_meadow()
+        title_panel = pygame.Rect(WIDTH // 2 - 230, 62, 460, 108)
+        draw_panel(self.screen, title_panel, fill=(30, 38, 56), border=(145, 190, 255), radius=28)
+        draw_text(self.screen, self.font_big, "Settings", WIDTH // 2, 102, (245, 248, 255), center=True)
+        draw_text(self.screen, self.font_small, "Match the new menu style and tune the run before entering the dungeon.", WIDTH // 2, 134, (215, 226, 245), center=True)
+
+        panel = pygame.Rect(WIDTH // 2 - 240, 208, 480, 248)
+        draw_panel(self.screen, panel, fill=(24, 30, 42), border=(120, 160, 225), radius=24)
+        side = pygame.Rect(90, 222, 206, 210)
+        draw_panel(self.screen, side, fill=(26, 34, 48), border=(110, 150, 210), radius=22, shadow=False)
+        draw_text(self.screen, self.font_mid, "Run Setup", side.centerx, side.y + 26, COL_TEXT, center=True)
+        diff_col = (255, 192, 110) if self.difficulty == "Hard" else (135, 220, 165)
+        draw_text(self.screen, self.font_small, f"Difficulty: {self.difficulty}", side.x + 22, side.y + 72, diff_col)
+        draw_text(self.screen, self.font_small, f"Sound toggle: {'On' if self.sound_on else 'Off'}", side.x + 22, side.y + 102, (210, 225, 245))
+        draw_text(self.screen, self.font_small, "Tip: Hard mode hits faster,", side.x + 22, side.y + 142, (190, 205, 226))
+        draw_text(self.screen, self.font_small, "spawns more danger, and", side.x + 22, side.y + 164, (190, 205, 226))
+        draw_text(self.screen, self.font_small, "punishes mistakes harder.", side.x + 22, side.y + 186, (190, 205, 226))
+
+        self.btn_sound.label = f"Sound: {'On' if self.sound_on else 'Off'}"
+        self.btn_diff.label = f"Difficulty: {self.difficulty}"
+        mouse = pygame.mouse.get_pos()
+        self.btn_sound.draw(self.screen, self.font_mid, mouse)
+        self.btn_diff.draw(self.screen, self.font_mid, mouse)
+        self.btn_back.draw(self.screen, self.font_mid, mouse)
+
+        self.draw_bottom_hint("Click a setting to switch it.   •   Press Esc to return to the menu")
+
+    def draw_checklist(self):
+        self.level.draw_dungeon_bg(self.screen, 0.0, self.time, self.vignette)
+        draw_text(self.screen, self.font_big, "Dungeon Checklist", WIDTH // 2, 120, COL_TEXT, center=True)
+        lines = [
+            f"- Door opens at {int(DOOR_THRESHOLD)}% hunger or more.",
+            "- Side-scrolling platformer dungeon (camera follows).",
+            "- Boss + ability cards + checkpoint every 5 levels.",
+            "- Boss levels (5/10/15): no passive hunger drain.",
+            "- Final Level 15: Dragon. Fire burns over time.",
+            "- Ability cards never repeat once picked.",
+            "",
+            "Controls: A/D move, W double jump, E attack/use door, Shift dash, F block/deflect.",
+            "Press Enter/Space to begin. (Esc to menu)",
+        ]
+        y = 190
+        for s in lines:
+            draw_text(self.screen, self.font, s, 90, y, COL_TEXT_DIM)
+            y += 28
+
+    def card_rects(self) -> List[pygame.Rect]:
+        w, h = 260, 170
+        gap = 26
+        total = w * 3 + gap * 2
+        x0 = WIDTH // 2 - total // 2
+        y0 = HEIGHT // 2 - h // 2 + 30
+        return [pygame.Rect(x0 + i * (w + gap), y0, w, h) for i in range(3)]
+
+    def draw_cards_overlay(self):
+        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 170))
+        self.screen.blit(overlay, (0, 0))
+        draw_text(self.screen, self.font_mid, f"Ability Cards — Level {self.dungeon}", WIDTH // 2, 120, COL_TEXT, center=True)
+        draw_text(self.screen, self.font_small, "Pick 1 (1/2/3 or click). Game paused.", WIDTH // 2, 150, COL_TEXT_DIM, center=True)
+
+        rects = self.card_rects()
+        mouse = pygame.mouse.get_pos()
+        for i, r in enumerate(rects):
+            if i >= len(self.card_options):
+                continue
+            hover = r.collidepoint(mouse)
+            fill = (38, 38, 48) if not hover else (60, 60, 78)
+            pygame.draw.rect(self.screen, fill, r, border_radius=16)
+            pygame.draw.rect(self.screen, (140, 140, 180), r, 2, border_radius=16)
+
+            c = self.card_options[i]
+            draw_text(self.screen, self.font_small, f"[{i+1}] {c.kind.upper()}", r.centerx, r.y + 24, COL_TEXT_DIM, center=True)
+            draw_text(self.screen, self.font_mid, c.title, r.centerx, r.y + 62, COL_TEXT, center=True)
+
+            words = c.desc.split()
+            lines = []
+            cur = ""
+            for w_ in words:
+                test = (cur + " " + w_).strip()
+                if self.font_small.size(test)[0] > r.w - 24:
+                    lines.append(cur)
+                    cur = w_
+                else:
+                    cur = test
+            if cur:
+                lines.append(cur)
+
+            yy = r.y + 98
+            for line in lines[:3]:
+                draw_text(self.screen, self.font_small, line, r.centerx, yy, COL_TEXT_DIM, center=True)
+                yy += 22
+
+    def draw_gameover(self):
+        self.level.draw_dungeon_bg(self.screen, 0.0, self.time, self.vignette)
+        draw_text(self.screen, self.font_big, "YOU DIED", WIDTH // 2, 160, COL_TEXT, center=True)
+        if self.checkpoint_snapshot and self.checkpoint_level > 1:
+            draw_text(self.screen, self.font_small, f"Checkpoint: Level {self.checkpoint_level}", WIDTH // 2, 200, COL_TEXT_DIM, center=True)
+        else:
+            draw_text(self.screen, self.font_small, "No checkpoint yet.", WIDTH // 2, 200, COL_TEXT_DIM, center=True)
+
+        mouse = pygame.mouse.get_pos()
+        self.btn_continue.label = f"Continue (Level {self.checkpoint_level})" if (self.checkpoint_snapshot and self.checkpoint_level > 1) else "Continue (locked)"
+        self.btn_continue.draw(self.screen, self.font_mid, mouse)
+        self.btn_restart.draw(self.screen, self.font_mid, mouse)
+        self.btn_exit.draw(self.screen, self.font_mid, mouse)
+
+    def draw_win(self):
+        self.level.draw_dungeon_bg(self.screen, 0.0, self.time, self.vignette)
+        draw_text(self.screen, self.font_big, "YOU WIN!", WIDTH // 2, 170, COL_TEXT, center=True)
+        draw_text(self.screen, self.font_small, "The dragon is defeated. The dungeon is cleared.", WIDTH // 2, 220, COL_TEXT_DIM, center=True)
+        draw_text(self.screen, self.font_small, "Press Enter/Space to restart or Esc for menu.", WIDTH // 2, 260, COL_TEXT_DIM, center=True)
+
+
+def main():
+    Game().run()
+
+
+if __name__ == "__main__":
+    main()
