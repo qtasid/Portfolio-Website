@@ -18,7 +18,7 @@ body{
 /* SIDEBAR */
 
 .sidebar{
-    width:260px;
+     width:260px;
     height:100vh;
     position:fixed;
     background:#0f172a;
@@ -26,6 +26,8 @@ body{
     box-shadow:4px 0 15px rgba(0,0,0,0.3);
     padding:30px 20px;
     text-align:center;
+
+    overflow-y:auto; /* ADD THIS */
 }
 
 .profile{
